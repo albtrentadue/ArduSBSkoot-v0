@@ -5,11 +5,13 @@
  * It drives 2 brushless controllers for both speed and direction and is 
  * controlled by a Wiinunchuck
  * 
- * By Alberto Trentadue 2017
+ * By Alberto Trentadue 2017-2018
  */
 
 //Per I2C
 #include <Wire.h>
+
+#define HALT_PROGRAM while(true) {}
 
 #define STATUS_LED 13
 #define VALIM_ANALOG A0
@@ -38,16 +40,34 @@ bool presenza = false;
 #define ADDR_NUNCHUCK_R 0xA5
 #define ADDR_ACCEL 0x68 //0b1101000
 
-//STATI FUNZIONAMENTO PROGRAMMA
-#define STATO_FERMO 0
-#define STATO_ACCEL_AVANTI 1
-#define STATO_REGIME_AVANTI 2
-#define STATO_DECEL_AVANTI 3
-#define STATO_ACCEL_INDIETRO 4
-#define STATO_REGIME_INDIETRO 5
-
+//Stati della macchina a stati del controllo discreto
+//Fare riferimento alla documentazione "Project.xls"
+#define F_LV0_PW0 0
+#define F_LV0_PW1 1
+#define F_LV0_PW2 2
+#define F_LV1_PW0 3
+#define F_LV1_PW1 4
+#define F_LV1_PW2 5
+#define F_LV2_PW0 6
+#define F_LV2_PW1 7
+#define F_LV2_PW2 8
+#define F_LVX_PW0 9
+#define F_LVX_PW1 10
+#define F_LVX_PW2 11
+#define B_LV0_PW0 12
+#define B_LV0_PW1 13
+#define B_LV1_PW0 14
+#define B_LV1_PW1 15
+#define B_LVX_PW0 16
+#define B_LVX_PW1 17
 //Stato di funzionamento del programma
-byte stato_prog = STATO_FERMO;
+byte stato_prog = F_LV0_PW0;
+
+//Costanti inclinazione pedana
+#define PF0 0
+#define PF1 1
+#define PF2 2
+#define PFB -1
 
 // Livelli analogici del partitore batteria
 // TODO: Calibrare rispetto al valore massimo della batteria
@@ -62,6 +82,9 @@ byte frenata = LOW;
 //Stati comando di inversione marcia. Attivo ALTO, pilota un NPN in saturazione
 byte inversione_dx = LOW;
 byte inversione_sx = LOW;
+//Flag di attivazione della procedura di inversione
+boolean inv_da_applicare_dx = false;
+boolean inv_da_applicare_sx = false;
 
 //Durata di un ciclo loop circa 5 msec
 #define RITARDO_MAIN 5
@@ -102,22 +125,38 @@ int16_t media_velo_sx;
 //Valore di (g*g)
 #define G2_MPU6050 234702400
 //by,min: Valore minimo di componente frontale by per rilevare la pendenza della pedana
-//Ottenuto con g * sen 15°
-//TODO: Verificare se 15° vanno bene
-#define BY_MINIMO 3965
+//Ottenuto con g * sen 10°
+//TODO: Verificare se 10° vanno bene
+#define BY_MINIMO 2660
+//by,veloce: Valore oltre il quale l'asse è più inclinata
+//Ottenuto con g * sen 20°
+//TODO: Verificare se 20° vanno bene
+#define BY_VELOCE 5239
 //bz,margine: Valore oltre il quale la componente bz si considera verticale
-//Ottenuto con g * cos 15°
-//TODO: Verificare se 15° vanno bene
-#define BZ_MARGINE 14798
-//Valore del sensore analogico di velocità ad 1 m/s
-//Ottenuto: VEL_1MPSEC = Vsens@1m/s (=2,906) * rapp.partizione 1/3 * 1023 / 5V
-//NOTA: Vsens@1m/s può cambiare da controller a controller!
-#define VEL_1MPSEC 198
-//Valore del sensore analogico di velocità ad 0,4 m/s
-//Ottenuto: VEL_04MPSEC = Vsens@0,4m/s * rapp.partizione 1/3 * 1023 / 5V
-//NOTA: Vsens@0,4m/s può cambiare da controller a controller!
-#define VEL_04MPSEC 79
-//valore minimo del PWM chge ferma il motore
+//Ottenuto con g * cos 10°
+//TODO: Verificare se 10° vanno bene
+#define BZ_MARGINE 15087
+//Valore limite del sensore analogico al livello velocità 2 
+//Ottenuto: VEL_LIM2 = Vsens,lim2 * rapp.partizione 1/3 * 1023 / 5V
+//TODO: da regolare
+#define VEL_LIM2 198
+//Valore limite del sensore analogico al livello velocità 1
+//Ottenuto: VEL_LIM1 = Vsens,lim1 * rapp.partizione 1/3 * 1023 / 5V
+//TODO: da regolare
+#define VEL_LIM1 79
+//Valore minimo del sensore analogico di velocità che considera il mezzo fermo
+//TODO: da regolare
+#define VEL_FERMO 8
+//Valore massimo assoluto del livello analogico della velocità
+#define VEL_ABS_MAX 300
+
+//Costanti livello di velocità
+#define LV0 0
+#define LV1 1
+#define LV2 2
+#define LVX 3
+
+//valore minimo del PWM che ferma il motore
 //Min Vthorttle : 1,4V
 //Ottenuto: PWM_THROTTLE_MIN = 1,4V / 5V * 255
 #define PWM_THROTTLE_MIN 70
@@ -125,12 +164,11 @@ int16_t media_velo_sx;
 //Max Vthorttle : 3V (per ora. TODO: dimensionare)
 //Ottenuto: PWM_THROTTLE_MAX = 3,1V / 5V * 255
 #define PWM_THROTTLE_MAX 160
-//Passi di incremento del throttle. 
-//Dovrebbe raggiungere il massimo in circa 1/2 secondo
-//TODO: da verificare in base al comportamento del motore ed alla durata di un ciclo loop
-#define PWM_THROTTLE_STEP 1
-//Passi di decremento del throttle: stimato 3*PWM_THROTTLE_STEP
-#define PWM_THROTTLE_RED_STEP 3
+//Valore del throttle per l'accelerazione moderata
+#define PWM_THROTTLE_MODERATE 100
+//Valore del throttle per l'accelerazione rapida
+#define PWM_THROTTLE_FAST 150
+
 
 //------ FUNZIONI -------
 
@@ -181,16 +219,16 @@ void loop() {
   leggi_nunchuck();
   leggi_presenza(); 
   calcola_medie();
-  ultimo_campione = (ultimo_campione + 1) % CICLI_CALC; 
-  ctrl_limiti_max();
+  ultimo_campione = (ultimo_campione + 1) % CICLI_CALC;   
   transiz_stato();
-  applica_frenata_invers();
+  ctrl_limiti_max();
+  applica_frenata();
+  applica_inversione();
   applica_pwm();
   report_status();
   //leggi_comando();
   heartbeat();
   delay(RITARDO_MAIN);
-  
 }
 
 /**
@@ -234,9 +272,8 @@ void leggi_analogici(void)
  */
 void leggi_nunchuck(void)
 {
-  
+  //TODO
 }
-
 
 /**
  * Verifica lo stato del pulsante di presenza
@@ -278,116 +315,343 @@ void calcola_medie(void)
 }
 
 /**
+ * Ferma e frena le ruote e blocca l'esecuzione del programma
+ * definitivamente. 
+ * Da usare solo in caso di intervento urgente.
+ */
+void abort_completo(void) {
+    digitalWrite(FRENATA_DX, HIGH);
+    digitalWrite(FRENATA_SX, HIGH);
+    analogWrite(PWM_DX, 0);
+    analogWrite(PWM_SX, 0);
+    //Blocco del programma. Reset necessario.
+    HALT_PROGRAM;
+}
+
+/**
  * Esegue controlli di valori assoluti che richiedono 
  * intervento immediato al di fuori della transizione di stato:
  * 1. velocità eccessiva dovuto al ribaltamento dell'hoverboard
  */
-void   ctrl_limiti_max() {
-
+void ctrl_limiti_max() {
+  if ( media_velo_dx >= VEL_ABS_MAX || media_velo_sx >= VEL_ABS_MAX )
+    abort_completo();    
 }
 
+/**
+ * Ritorna lo stato di inclinazione della pedana in base
+ * agli angoli misurati.
+ * Valori possibili:
+ * PF0: orizzontale
+ * PF1: Poco inclinata
+ * PF2: Inclinata
+ * PFB: Inclinata all'indietro
+ */
+byte inclinazione_pedana(void) {
+  if (media_z_acc <= BZ_MARGINE) {
+    if (media_y_acc <= -BY_MINIMO) return PFB;
+    if (media_y_acc >= BY_VELOCE) return PF2;
+    if (media_y_acc >= BY_MINIMO) return PF1;
+  }
+  return PF0;
+}
+
+/**
+ * Ritorna lo stato di velocità media tra le due ruote
+ */
+byte stato_velo_ruote(void) {
+  int16_t mv = media_velo_dx + media_velo_sx;
+  if (mv < (2 * VEL_FERMO)) return LV0;
+  if (mv < (2 * VEL_LIM1)) return LV1;
+  if (mv < (2 * VEL_LIM2)) {
+    if (pwm_throttle == PWM_THROTTLE_FAST) return LV2;
+  }
+  return LVX;
+}
 /**
  * Gestisce lo stato di funzionamento del programma e le sue transizioni.
  * Eseguito ogni CICLI_CALC iterazioni
  */
 void transiz_stato(void) 
-{    
+{ 
+  byte incl_pedana = inclinazione_pedana();
+  byte stato_velo_corr = stato_velo_ruote();   
   //Seleziona in base allo stato del programma
   switch(stato_prog) {
-    //-- GESTIONE STATO DA FERMO
-    case STATO_FERMO:
-      if (media_z_acc < BZ_MARGINE) {
-        if (media_y_acc > BY_MINIMO) {
-          //La pedana è inclinata in avanti per avanzare
-          frenata = LOW;
-          inversione_sx = LOW;
-          inversione_dx = LOW;
-          stato_prog = STATO_ACCEL_AVANTI;
-        }
-        else if (media_y_acc < -BY_MINIMO) {
-          //La pedana è inclinata indietro per retromarcia
-          frenata = LOW;
+    case F_LV0_PW0:
+      switch (incl_pedana) {
+        case PF1: 
+          stato_prog = F_LV0_PW1;
+          pwm_throttle = PWM_THROTTLE_MODERATE;
+          break;
+        case PF2:
+          stato_prog = F_LV0_PW2;
+          pwm_throttle = PWM_THROTTLE_FAST;
+          break;
+        case PFB:
+          stato_prog = B_LV0_PW0;
+          inv_da_applicare_dx = true;
+          inv_da_applicare_sx = true;
           inversione_sx = HIGH;
           inversione_dx = HIGH;
-          stato_prog = STATO_ACCEL_INDIETRO;
-        }
       }
       break;
-
-    //-- GESTIONE STATO IN ACCELERAZIONE AVANTI
-    case STATO_ACCEL_AVANTI:
-      if (media_z_acc > BZ_MARGINE) {
-        //La pedana è tornata orizzontale          
-        stato_prog = STATO_DECEL_AVANTI;
-      } else {
-        //Si è in fase di accelerazione
-        if (((media_velo_dx + media_velo_sx) < 2 * VEL_1MPSEC) && (pwm_throttle < PWM_THROTTLE_MAX))
-          //continua l'accelerazione
-          pwm_throttle += PWM_THROTTLE_STEP;
-        else
-          //Raggiunto il massimo si passa al regime
-          stato_prog = STATO_REGIME_AVANTI;
+    //---------------------------------//
+    case F_LV0_PW1:
+      switch (incl_pedana) {
+        case PF0: 
+        case PFB:
+          stato_prog = F_LV0_PW0;
+          pwm_throttle = 0;
+          break;
+        case PF1:
+          if (stato_velo_corr != LV0)
+              stato_prog = F_LV1_PW1;
+          break;
+        case PF2:
+          stato_prog = F_LV0_PW2;
+          pwm_throttle = PWM_THROTTLE_FAST;          
       }
       break;
-
-    //-- GESTIONE STATO REGIME AVANTI
-    case STATO_REGIME_AVANTI:
-      if (media_z_acc > BZ_MARGINE) 
-        //La pedana è tornata orizzontale
-        stato_prog = STATO_DECEL_AVANTI;
+    //---------------------------------//      
+    case F_LV0_PW2:
+      switch (incl_pedana) {
+        case PF0: 
+        case PFB:
+          stato_prog = F_LV0_PW0;
+          pwm_throttle = 0;
+          break;
+        case PF1:
+          stato_prog = F_LV0_PW1;
+          pwm_throttle = PWM_THROTTLE_MODERATE;
+          break;
+        case PF2:
+          if (stato_velo_corr != LV0)
+            stato_prog = F_LV1_PW2;
+      }
       break;
-
-    //-- GESTIONE STATO DECEL AVANTI
-    case STATO_DECEL_AVANTI:
-      if (media_z_acc > BZ_MARGINE) {
-        //La pedana è ancora orizzontale: riduco la velocità
-        if (pwm_throttle > PWM_THROTTLE_MIN)
-          //continua la decelerazione
-          pwm_throttle -= PWM_THROTTLE_RED_STEP;
-        else {
-          pwm_throttle=PWM_THROTTLE_MIN;
-          frenata = HIGH;
-          stato_prog = STATO_FERMO;
-        }          
-      } else {
-        if (media_y_acc > BY_MINIMO) 
-          //La pedana è tornata inclinata in avanti: riprendo l'accelerazione
-          stato_prog = STATO_ACCEL_AVANTI;
-        else if (media_y_acc < -BY_MINIMO) {
-          //La pedana è inclinata indietro: fermo repentinamente per gestire successivamente la retromarcia
-          pwm_throttle=PWM_THROTTLE_MIN;
-          frenata = HIGH;
-          stato_prog = STATO_FERMO;
-        }
+    //---------------------------------//
+    case F_LV1_PW0:
+      switch (incl_pedana) {
+        case PF0: 
+        case PFB:
+          if (stato_velo_corr == LV0) 
+            stato_prog = F_LV0_PW0;
+          break;
+        case PF1:
+          stato_prog = F_LV1_PW1;
+          pwm_throttle = PWM_THROTTLE_MODERATE;
+          break;
+        case PF2:                
+          stato_prog = F_LV1_PW2;
+          pwm_throttle = PWM_THROTTLE_FAST;        
       }
-
-    //-- GESTIONE STATO IN ACCELERAZIONE INDIETRO
-    case STATO_ACCEL_INDIETRO:
-      if (media_z_acc > BZ_MARGINE) {
-        //La pedana è tornata orizzontale
-        pwm_throttle=PWM_THROTTLE_MIN;
-        frenata = HIGH;
-        stato_prog = STATO_FERMO;
-      } else {
-        //Si è in fase di accelerazione all'indietro
-        if (((media_velo_dx + media_velo_sx) < 2 * VEL_04MPSEC) && (pwm_throttle < PWM_THROTTLE_MAX))
-          //continua l'accelerazione
-          pwm_throttle += PWM_THROTTLE_STEP;
-        else
-          //Raggiunto il massimo si passa al regime
-          stato_prog = STATO_REGIME_INDIETRO;
+      break;
+    //---------------------------------//
+    case F_LV1_PW1:
+      switch (incl_pedana) {
+        case PF0: 
+        case PFB:
+          stato_prog = F_LV1_PW0;
+          pwm_throttle = 0;          
+          break;
+        case PF1:
+          if (stato_velo_corr == LVX)
+            stato_prog = F_LVX_PW1;
+          break;
+        case PF2:                
+          stato_prog = F_LV1_PW2;
+          pwm_throttle = PWM_THROTTLE_FAST;        
       }
-      break;   
+      break;
+    //---------------------------------//
+    case F_LV1_PW2:
+      switch (incl_pedana) {
+        case PF0:
+        case PF1: 
+        case PFB:
+          stato_prog = F_LV1_PW1;
+          pwm_throttle = PWM_THROTTLE_MODERATE;          
+          break;
+        case PF2:                
+          if (stato_velo_corr > LV1)
+            stato_prog = F_LV2_PW2;       
+      }
+      break;
+    //---------------------------------//
+    case F_LV2_PW0:
+      switch (incl_pedana) {
+        case PF0:
+        case PFB:
+          if (stato_velo_corr < LV2)
+            stato_prog = F_LV1_PW0;         
+          break;
+        case PF1:
+          stato_prog = F_LV2_PW1;
+          pwm_throttle = PWM_THROTTLE_MODERATE;          
+          break;
+        case PF2:
+          stato_prog = F_LV2_PW2;
+          pwm_throttle = PWM_THROTTLE_FAST;          
+      }
+      break;
+    //---------------------------------//
+    case F_LV2_PW1:
+      switch (incl_pedana) {
+        case PF0:
+        case PFB:
+          stato_prog = F_LV2_PW0;
+          pwm_throttle = 0;         
+          break;
+        case PF1:
+          if (stato_velo_corr < LV2)
+            stato_prog = F_LV1_PW1;
+          pwm_throttle = PWM_THROTTLE_MODERATE;          
+          break;
+        case PF2:
+          stato_prog = F_LV2_PW2;
+          pwm_throttle = PWM_THROTTLE_FAST;          
+      }
+      break;
+    //---------------------------------//
+    case F_LV2_PW2:
+      switch (incl_pedana) {
+        case PF0:
+        case PF1:
+        case PFB:
+          stato_prog = F_LV2_PW1;
+          pwm_throttle = PWM_THROTTLE_MODERATE;
+          break;
+        case PF2:
+          if (stato_velo_corr == LVX)
+             stato_prog = F_LVX_PW2;
+      }
+      break;
+    //---------------------------------//
+    case F_LVX_PW0:
+      switch (incl_pedana) {
+        case PF0:
+        case PF1:
+        case PFB:
+          if (stato_velo_corr != LVX) {
+            if (stato_velo_corr == LV2)
+              stato_prog = F_LV2_PW0;
+            else
+              stato_prog = F_LV1_PW0;
+          }
+          break;
+        case PF2:
+          if (stato_velo_corr != LVX)
+            stato_prog = F_LV2_PW0; 
+      }
+      break;
+    //---------------------------------//
+    case F_LVX_PW1:
+      switch (incl_pedana) {
+        case PF0:
+        case PF1:
+        case PFB:
+          stato_prog = F_LVX_PW0;
+          pwm_throttle = 0;
+          break;
+        case PF2:
+          if (stato_velo_corr < LV2) 
+            stato_prog = F_LV1_PW1; 
+      }
+      break;
+    //---------------------------------//
+    case F_LVX_PW2:
+      switch (incl_pedana) {
+        case PF0:
+        case PFB:
+          stato_prog = F_LVX_PW0;
+          pwm_throttle = 0;
+          break;
+        case PF1:
+        case PF2:
+          stato_prog = F_LVX_PW1;
+          pwm_throttle = PWM_THROTTLE_MODERATE;          
+      }
+      break;
+    //---------------------------------//
+    case B_LV0_PW0:
+      switch (incl_pedana) {
+        case PF0:
+        case PF1:
+        case PF2:        
+          stato_prog = F_LV0_PW0;
+          inv_da_applicare_dx = true;
+          inv_da_applicare_sx = true;
+          inversione_sx = LOW;
+          inversione_dx = LOW;
+          break;
+        case PFB:
+          stato_prog = B_LV0_PW1;
+          pwm_throttle = PWM_THROTTLE_MODERATE;          
+      }
+      break; 
+    //---------------------------------//
+    case B_LV0_PW1:
+      switch (incl_pedana) {
+        case PF0:
+        case PF1:
+        case PF2:        
+          stato_prog = F_LV0_PW0;
+          inv_da_applicare_dx = true;
+          inv_da_applicare_sx = true;          
+          inversione_sx = LOW;
+          inversione_dx = LOW;
+          break;
+        case PFB:
+          if (stato_velo_corr > LV0)
+            stato_prog = F_LV1_PW1;          
+      }
+      break;
+    //---------------------------------//
+    case B_LV1_PW0:
+      switch (incl_pedana) {
+        case PF0:
+        case PF1:
+        case PF2:        
+          if (stato_velo_corr == LV0)
+            stato_prog = B_LV0_PW0;
+        case PFB:
+          stato_prog = B_LV1_PW1;
+          pwm_throttle = PWM_THROTTLE_MODERATE;          
+      }
+      break;
+    //---------------------------------//
+    case B_LV1_PW1:
+      switch (incl_pedana) {
+        case PF0:
+        case PF1:
+        case PF2:        
+          stato_prog = B_LV1_PW0;
+          pwm_throttle = 0;
+        case PFB:
+          if (stato_velo_corr > LV1)
+            stato_prog = B_LVX_PW1;          
+      }
+      break;
+    //---------------------------------//
+    case B_LVX_PW0: 
+      if (stato_velo_corr != LVX)
+        stato_prog = B_LV1_PW0;
 
-    //-- GESTIONE STATO REGIME INDIETRO
-    case STATO_REGIME_INDIETRO:
-      if (media_z_acc > BZ_MARGINE) {
-        //La pedana è tornata orizzontale
-        pwm_throttle=PWM_THROTTLE_MIN;
-        frenata = HIGH;
-        stato_prog = STATO_FERMO;
-      }       
-      break;             
+      break;            
+    //---------------------------------//
+    case B_LVX_PW1:
+      switch (incl_pedana) {
+        case PF0:
+          if (stato_velo_corr != LVX)
+            stato_prog = B_LV1_PW1;
+        case PF1:
+        case PF2:        
+        case PFB:
+          stato_prog = B_LVX_PW0;
+          pwm_throttle = 0;
+      }
+      break;                             
   }
   
 }
@@ -414,14 +678,30 @@ void applica_pwm(void)
 }
 
 /**
- * Applica il valore della frenata e di inversione ai controllers
+ * Applica la procedura di inversione di marcia ai controllers:
+ * - Stop per un certo tempo
+ * - Applicazione del livello logico
  */
-void applica_frenata_invers(void) 
+void applica_inversione(void) 
 {
-  digitalWrite(FRENATA_DX, frenata);
-  digitalWrite(FRENATA_SX, frenata);
-  digitalWrite(INVERS_DX, inversione_dx);
-  digitalWrite(INVERS_SX, inversione_sx);    
+  if (inv_da_applicare_dx || inv_da_applicare_sx) {
+    if (inv_da_applicare_dx) analogWrite(PWM_DX, 0);
+    if (inv_da_applicare_sx) analogWrite(PWM_SX, 0);
+    delay(450);  
+    if (inv_da_applicare_dx) digitalWrite(INVERS_DX, inversione_dx);
+    if (inv_da_applicare_sx) digitalWrite(INVERS_SX, inversione_sx);
+    inv_da_applicare_dx = false;
+    inv_da_applicare_sx = false;      
+  }
+}
+
+/**
+ * Applica i valori di frenata ai controllers
+ */
+void applica_frenata(void)
+{
+    digitalWrite(FRENATA_DX, frenata);
+    digitalWrite(FRENATA_SX, frenata);    
 }
 
 /**
@@ -432,15 +712,16 @@ void report_status(void)
 {
   cnt_comm--;
   if (cnt_comm == 0) {
-    Serial.print(F("STATUS"));
-    Serial.print(F(":ZACC="));Serial.print(media_z_acc, DEC);
-    Serial.print(F(";YACC="));Serial.print(media_y_acc, DEC);    
-    Serial.print(F(":VLDX="));Serial.print(velo_dx, DEC);
-    Serial.print(F(";VLSX="));Serial.print(velo_sx, DEC);
-    Serial.print(F(";PWTH="));Serial.print(pwm_throttle, DEC);    
-    Serial.print(F(";FREN="));Serial.print(frenata, DEC);  
-    Serial.print(F(";BATT="));Serial.print(livello_batt, DEC);
-    Serial.print(F(";TEMP="));Serial.print(t_acc, DEC);  
+    Serial.print(F("S="));Serial.print(stato_prog, DEC);
+    Serial.print(F(";Z="));Serial.print(media_z_acc, DEC);
+    Serial.print(F(";Y="));Serial.print(media_y_acc, DEC);    
+    Serial.print(F(";VD="));Serial.print(velo_dx, DEC);
+    Serial.print(F(";VS="));Serial.print(velo_sx, DEC);
+    Serial.print(F(";T="));Serial.print(pwm_throttle, DEC);    
+    Serial.print(F(";ID="));Serial.print(inversione_dx, DEC);
+    Serial.print(F(";IS="));Serial.print(inversione_sx, DEC);  
+    Serial.print(F(";B="));Serial.print(livello_batt, DEC);
+    Serial.print(F(";C="));Serial.print(t_acc, DEC);  
     Serial.println();
 
     cnt_comm = CICLI_COMM;
