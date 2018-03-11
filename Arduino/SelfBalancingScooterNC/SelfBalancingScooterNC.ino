@@ -3,7 +3,7 @@
  * Self balancing scooter controller sketch using one single rolling board
  * and one single accelerometer sensor.
  * It drives 2 brushless controllers for both speed and direction and is 
- * controlled by a Wiinunchuck
+ * controlled by a Wii Nunchuck
  * 
  * By Alberto Trentadue 2017-2018
  */
