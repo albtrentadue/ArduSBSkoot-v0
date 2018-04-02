@@ -45,21 +45,21 @@ bool presenza = false;
 #define F_LV0_PW0 0
 #define F_LV0_PW1 1
 #define F_LV0_PW2 2
-#define F_LV1_PW0 3
-#define F_LV1_PW1 4
-#define F_LV1_PW2 5
-#define F_LV2_PW0 6
-#define F_LV2_PW1 7
-#define F_LV2_PW2 8
-#define F_LVX_PW0 9
-#define F_LVX_PW1 10
-#define F_LVX_PW2 11
-#define B_LV0_PW0 12
-#define B_LV0_PW1 13
-#define B_LV1_PW0 14
-#define B_LV1_PW1 15
-#define B_LVX_PW0 16
-#define B_LVX_PW1 17
+#define F_LV1_PW0 10
+#define F_LV1_PW1 11
+#define F_LV1_PW2 12
+#define F_LV2_PW0 20
+#define F_LV2_PW1 21
+#define F_LV2_PW2 22
+#define F_LVX_PW0 90
+#define F_LVX_PW1 91
+#define F_LVX_PW2 92
+#define B_LV0_PW0 100
+#define B_LV0_PW1 101
+#define B_LV1_PW0 110
+#define B_LV1_PW1 111
+#define B_LVX_PW0 190
+#define B_LVX_PW1 191
 //Stato di funzionamento del programma
 byte stato_prog = F_LV0_PW0;
 
@@ -103,10 +103,10 @@ int16_t z_acc;
 int32_t somma_z_acc = 0;
 int16_t serie_z[CICLI_CALC];
 int16_t media_z_acc;
-int16_t y_acc;
-int32_t somma_y_acc = 0;
-int16_t serie_y[CICLI_CALC];
-int16_t media_y_acc;
+int16_t x_acc;
+int32_t somma_x_acc = 0;
+int16_t serie_x[CICLI_CALC];
+int16_t media_x_acc;
 int16_t t_acc;
 
 //Variabili per le misure della velocità delle ruote
@@ -121,21 +121,18 @@ int16_t media_velo_sx;
 
 //-- COSTANTI PER LA GESTIONE ACCELERAZIONE
 //Valore di g misurato dal MPU6050 da calibrare a mano.
-#define G_MPU6050 15320
+#define G_MPU6050 17700 //Misurato il 18/03/2018
 //Valore di (g*g)
-#define G2_MPU6050 234702400
-//by,min: Valore minimo di componente frontale by per rilevare la pendenza della pedana
-//Ottenuto con g * sen 10°
-//TODO: Verificare se 10° vanno bene
-#define BY_MINIMO 2660
-//by,veloce: Valore oltre il quale l'asse è più inclinata
-//Ottenuto con g * sen 20°
-//TODO: Verificare se 20° vanno bene
-#define BY_VELOCE 5239
+#define G2_MPU6050 313290000
+//bx,min: Valore minimo di componente frontale bx per rilevare la pendenza della pedana
+//TODO: Verificare sperimentalmente
+#define BX_MINIMO 1800
+//bx,veloce: Valore oltre il quale l'asse è più inclinata
+//TODO: Verificare sperimentalmente
+#define BX_VELOCE 3000
 //bz,margine: Valore oltre il quale la componente bz si considera verticale
-//Ottenuto con g * cos 10°
-//TODO: Verificare se 10° vanno bene
-#define BZ_MARGINE 15087
+//TODO: Verificare sperimentalmente
+#define BZ_MARGINE 17600
 //Valore limite del sensore analogico al livello velocità 2 
 //Ottenuto: VEL_LIM2 = Vsens,lim2 * rapp.partizione 1/3 * 1023 / 5V
 //TODO: da regolare
@@ -196,7 +193,7 @@ void setup() {
   byte i;
   for (i=0; i<CICLI_CALC; i++) {
     serie_z[i]=0;
-    serie_y[i]=0;
+    serie_x[i]=0;
     serie_velo_dx[i]=0;
     serie_velo_sx[i]=0;
   }
@@ -232,8 +229,8 @@ void loop() {
 }
 
 /**
- * Legge i valori Z e Y e la temperatura dall'accelerometro via I2C
- * I valori sono memorizzati in z_acc, y_acc e t_acc
+ * Legge i valori Z e X e la temperatura dall'accelerometro via I2C
+ * I valori sono memorizzati in z_acc, x_acc e t_acc
  * Si considera un accelerometro del tipo MPU-6050
  */
 void leggi_accelerometro(void) 
@@ -242,10 +239,11 @@ void leggi_accelerometro(void)
   leggi_mpu6050();
   
   //aggiorna i campioni delle accelerazioni
-  somma_z_acc += (z_acc - serie_z[ultimo_campione]);
-  somma_y_acc += (y_acc - serie_y[ultimo_campione]);
-  serie_z[ultimo_campione] = z_acc;
-  serie_y[ultimo_campione] = y_acc;    
+  //z_acc e x_acc sono al negativo per come è stato montato l'MPU6050
+  somma_z_acc += (-z_acc - serie_z[ultimo_campione]);
+  somma_x_acc += (-x_acc - serie_x[ultimo_campione]);
+  serie_z[ultimo_campione] = -z_acc;
+  serie_x[ultimo_campione] = -x_acc;    
 }
 
 /**
@@ -257,9 +255,12 @@ void leggi_accelerometro(void)
 void leggi_analogici(void)
 {
   livello_batt = analogRead(VALIM_ANALOG);
-  
-  velo_dx = analogRead(MISVEL_DX);
-  velo_sx = analogRead(MISVEL_SX);
+
+  //***ATTENZIONE TEMPORANEO FINCHE' NON MISURA VELOCITA'***
+  velo_dx=0;
+  velo_sx=0;
+  //velo_dx = analogRead(MISVEL_DX);
+  //velo_sx = analogRead(MISVEL_SX);
   //aggiorna le medie delle velocità
   somma_velo_dx += (velo_dx - serie_velo_dx[ultimo_campione]);
   somma_velo_sx += (velo_sx - serie_velo_sx[ultimo_campione]);
@@ -304,7 +305,7 @@ void calcola_medie(void)
   cnt_calc--;
   if (cnt_calc == 0) { 
     media_z_acc = somma_z_acc / CICLI_CALC;
-    media_y_acc = somma_y_acc / CICLI_CALC;
+    media_x_acc = somma_x_acc / CICLI_CALC;
   
     media_velo_dx = somma_velo_dx / CICLI_CALC;
     media_velo_sx = somma_velo_sx / CICLI_CALC;
@@ -349,9 +350,9 @@ void ctrl_limiti_max() {
  */
 byte inclinazione_pedana(void) {
   if (media_z_acc <= BZ_MARGINE) {
-    if (media_y_acc <= -BY_MINIMO) return PFB;
-    if (media_y_acc >= BY_VELOCE) return PF2;
-    if (media_y_acc >= BY_MINIMO) return PF1;
+    if (media_x_acc <= -BX_MINIMO) return PFB;
+    if (media_x_acc >= BX_VELOCE) return PF2;
+    if (media_x_acc >= BX_MINIMO) return PF1;
   }
   return PF0;
 }
@@ -712,16 +713,16 @@ void report_status(void)
 {
   cnt_comm--;
   if (cnt_comm == 0) {
-    Serial.print(F("S="));Serial.print(stato_prog, DEC);
-    Serial.print(F(";Z="));Serial.print(media_z_acc, DEC);
-    Serial.print(F(";Y="));Serial.print(media_y_acc, DEC);    
-    Serial.print(F(";VD="));Serial.print(velo_dx, DEC);
-    Serial.print(F(";VS="));Serial.print(velo_sx, DEC);
-    Serial.print(F(";T="));Serial.print(pwm_throttle, DEC);    
-    Serial.print(F(";ID="));Serial.print(inversione_dx, DEC);
-    Serial.print(F(";IS="));Serial.print(inversione_sx, DEC);  
-    Serial.print(F(";B="));Serial.print(livello_batt, DEC);
-    Serial.print(F(";C="));Serial.print(t_acc, DEC);  
+    Serial.print(F("S;"));Serial.print(stato_prog, DEC);
+    Serial.print(F(";ZM;"));Serial.print(media_z_acc, DEC);     
+    Serial.print(F(";XM;"));Serial.print(media_x_acc, DEC);    
+    Serial.print(F(";VD;"));Serial.print(velo_dx, DEC);
+    Serial.print(F(";VS;"));Serial.print(velo_sx, DEC);
+    Serial.print(F(";T;"));Serial.print(pwm_throttle, DEC);    
+    Serial.print(F(";ID;"));Serial.print(inversione_dx, DEC);
+    Serial.print(F(";IS;"));Serial.print(inversione_sx, DEC);  
+    Serial.print(F(";B;"));Serial.print(livello_batt, DEC);
+    Serial.print(F(";C;"));Serial.print(t_acc, DEC);  
     Serial.println();
 
     cnt_comm = CICLI_COMM;

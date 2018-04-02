@@ -785,7 +785,7 @@ void leggi_mpu6050(void)
   */
   
   z_acc = accel_t_gyro.value.z_accel;
-  y_acc = accel_t_gyro.value.y_accel;
+  x_acc = accel_t_gyro.value.x_accel;
 
   // The temperature sensor is -40 to +85 degrees Celsius.
   // It is a signed integer.
