@@ -260,15 +260,18 @@ void leggi_accelerometro(void)
 void leggi_analogici(void)
 {
   livello_batt = analogRead(VALIM_ANALOG);
-
-  //velo_dx=0;
-  //velo_sx=0;
+  //Ritardo MUX
+  delayMicroseconds(500);
+  
+  //velo_dx=0;  
   velo_dx = analogRead(MISVEL_DX);
-  velo_sx = analogRead(MISVEL_SX);
-  //aggiorna le medie delle velocità
   somma_velo_dx += (velo_dx - serie_velo_dx[ultimo_campione]);
-  somma_velo_sx += (velo_sx - serie_velo_sx[ultimo_campione]);
   serie_velo_dx[ultimo_campione] = velo_dx;
+  //Ritardo MUX
+  delayMicroseconds(500);
+  //velo_sx=0;
+  velo_sx = analogRead(MISVEL_SX);  
+  somma_velo_sx += (velo_sx - serie_velo_sx[ultimo_campione]);
   serie_velo_sx[ultimo_campione] = velo_sx;
 }
 
