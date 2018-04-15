@@ -65,18 +65,16 @@ byte stato_prog = F_LV0_PW0;
 
 //-- COSTANTI PER LA GESTIONE ACCELERAZIONE
 //Valore di g misurato dal MPU6050 da calibrare a mano.
-#define G_MPU6050 17700 //Misurato il 18/03/2018
-//Valore di (g*g)
-#define G2_MPU6050 313290000
+#define G_MPU6050 17800 //Misurato.
 //bx,min: Valore minimo di componente frontale bx per rilevare la pendenza della pedana
 //TODO: Verificare sperimentalmente
-#define BX_MINIMO 1800
+#define BX_MINIMO 1700
 //bx,veloce: Valore oltre il quale l'asse è più inclinata
 //TODO: Verificare sperimentalmente
-#define BX_VELOCE 3000
+#define BX_VELOCE 2800
 //bz,margine: Valore oltre il quale la componente bz si considera verticale
 //TODO: Verificare sperimentalmente
-#define BZ_MARGINE 17600
+#define BZ_MARGINE 17700
 //Valore limite del sensore analogico al livello velocità 2 
 //Ottenuto: VEL_LIM2 = Vsens,lim2 * rapp.partizione 1/3 * 1023 / 5V
 //TODO: da regolare
@@ -101,7 +99,7 @@ byte stato_prog = F_LV0_PW0;
 #define PF0 0
 #define PF1 1
 #define PF2 2
-#define PFB -1
+#define PFB 255
 
 // Livelli analogici del partitore batteria
 // TODO: Calibrare rispetto al valore massimo della batteria
@@ -112,21 +110,21 @@ int livello_batt = 0;
 //valore minimo del PWM che ferma il motore
 //Min Vthorttle : 1,4V
 //Ottenuto: PWM_THROTTLE_MIN = 1,4V / 5V * 255
-#define PWM_THROTTLE_MIN 70
+#define PWM_THROTTLE_MIN 20.0
 //Valore massimo ammesso per il PWM Vthrottle per la marcia avanti
 //Max Vthorttle : 3V (per ora. TODO: dimensionare)
 //Ottenuto: PWM_THROTTLE_MAX = 3,1V / 5V * 255
-#define PWM_THROTTLE_MAX 160
+#define PWM_THROTTLE_MAX 160.0
 //Valore del throttle per l'accelerazione moderata
-#define PWM_THROTTLE_MODERATE 100
+#define PWM_THROTTLE_MODERATE 100.0
 //Valore del throttle per l'accelerazione rapida
-#define PWM_THROTTLE_FAST 150
+#define PWM_THROTTLE_FAST 130.0
 //Moltiplicatore del feedback per il throttle: THR[i+1] = THR[i] + THROTTLE_GAIN * err(THR[i])
-#define THROTTLE_GAIN 2
+#define THROTTLE_GAIN 0.05
 //Livello di throttle asintotico - via PWM
-byte pwm_throttle[] = {0, PWM_THROTTLE_MODERATE, PWM_THROTTLE_FAST};
+float pwm_throttle[] = {PWM_THROTTLE_MIN, PWM_THROTTLE_MODERATE, PWM_THROTTLE_FAST};
 //Livello di throttle istantaneo - via PWM
-byte pwm_throttle_istantaneo = PWM_THROTTLE_MIN;
+float pwm_throttle_istantaneo = PWM_THROTTLE_MIN;
 
 //Stato comando di frenata. Attivo ALTO, pilota un NPN in saturazione
 byte frenata = LOW;
@@ -137,7 +135,7 @@ byte inversione_sx = LOW;
 boolean inv_da_applicare_dx = false;
 boolean inv_da_applicare_sx = false;
 //Cicli di inerzia per cambio di stato
-#define INERZIA_STATO 4
+#define INERZIA_STATO 3
 //Contatore di inerzia per i cambi di stato
 byte cnt_inerzia_stato = 0;
 
@@ -173,7 +171,6 @@ int16_t velo_sx;
 int32_t somma_velo_sx = 0;
 int16_t serie_velo_sx[CICLI_CALC];
 int16_t media_velo_sx;
-
 
 //------ FUNZIONI -------
 
@@ -332,6 +329,7 @@ void abort_completo(void) {
     digitalWrite(FRENATA_SX, HIGH);
     analogWrite(PWM_DX, 0);
     analogWrite(PWM_SX, 0);
+    digitalWrite(LED_BUILTIN, HIGH);
     //Blocco del programma. Reset necessario.
     HALT_PROGRAM;
 }
@@ -372,7 +370,7 @@ byte stato_velo_ruote(void) {
   if (mv < (2 * VEL_FERMO)) return LV0;
   if (mv < (2 * VEL_LIM1)) return LV1;
   if (mv < (2 * VEL_LIM2)) {
-    if (pwm_throttle == PWM_THROTTLE_FAST) return LV2;
+    if (pwm_throttle_istantaneo == PWM_THROTTLE_FAST) return LV2;
   }
   return LVX;
 }
@@ -382,7 +380,7 @@ byte stato_velo_ruote(void) {
  */
 void transiz_stato(void) 
 { 
-  byte incl_pedana = inclinazione_pedana();
+  byte incl_pedana = inclinazione_pedana();  
   byte stato_velo_corr = stato_velo_ruote();
   byte nuovo_stato_prog = stato_prog;
   byte nuova_inversione_sx = inversione_sx;
@@ -642,6 +640,14 @@ void transiz_stato(void)
       break;                             
   }
 
+  /*
+   SENZA INERZIA
+  stato_prog = nuovo_stato_prog;
+  inversione_sx = nuova_inversione_sx;
+  inversione_dx = nuova_inversione_dx;
+  cnt_inerzia_stato = 0;
+  */
+  
   //INERZIA CAMBIO STATO
   if (nuovo_stato_prog != stato_prog) {
     //Se c'è possibilità di cambio, si controlla l'inerzia
@@ -659,7 +665,6 @@ void transiz_stato(void)
   } else
     //resetta il conteggio di inerzia
     cnt_inerzia_stato = 0;
-  
 }
 
 /**
@@ -670,12 +675,12 @@ void applica_pwm(void)
 {  
   //TODO: applicare le variazioni derivanti dal nunchuck
   //TODO: applicare la calibrazione analogica di compensazione DX/SX
-  if (presenza) {
-    //Applicazione retroazione:
-    //l'indice del throttle target è dato dai 2 bit meno significativi dello stato     
-    pwm_throttle_istantaneo += THROTTLE_GAIN * (pwm_throttle[stato_prog & 0b11] - pwm_throttle_istantaneo);
-    analogWrite(PWM_DX, pwm_throttle_istantaneo);
-    analogWrite(PWM_SX, pwm_throttle_istantaneo);
+  //Applicazione retroazione: t[i+1] = THROTTLE_GAIN * ERR(t[stato],t[i])
+  //l'indice del throttle target è dato dai 2 bit meno significativi dello stato     
+  pwm_throttle_istantaneo += (THROTTLE_GAIN * (pwm_throttle[stato_prog & 0b11] - pwm_throttle_istantaneo));  
+  if (presenza) {    
+    analogWrite(PWM_DX, byte(pwm_throttle_istantaneo));
+    analogWrite(PWM_SX, byte(pwm_throttle_istantaneo));
   }
   else {
     //Non aziona i motori se non è premuto il pulsante di presenza
@@ -721,16 +726,16 @@ void report_status(void)
 {
   cnt_comm--;
   if (cnt_comm == 0) {
-    Serial.print(F("S;"));Serial.print(stato_prog, DEC);
+    Serial.print(F("S;"));Serial.print(stato_prog, BIN);
     Serial.print(F(";ZM;"));Serial.print(media_z_acc, DEC);     
     Serial.print(F(";XM;"));Serial.print(media_x_acc, DEC);    
     Serial.print(F(";VD;"));Serial.print(velo_dx, DEC);
     Serial.print(F(";VS;"));Serial.print(velo_sx, DEC);
-    Serial.print(F(";T;"));Serial.print(pwm_throttle_istantaneo, DEC);    
+    Serial.print(F(";TH;"));Serial.print(pwm_throttle_istantaneo, 1);    
     Serial.print(F(";ID;"));Serial.print(inversione_dx, DEC);
     Serial.print(F(";IS;"));Serial.print(inversione_sx, DEC);  
     Serial.print(F(";B;"));Serial.print(livello_batt, DEC);
-    Serial.print(F(";C;"));Serial.print(t_acc, DEC);  
+    Serial.print(F(";C;"));Serial.print(t_acc, DEC);    
     Serial.println();
 
     cnt_comm = CICLI_COMM;
