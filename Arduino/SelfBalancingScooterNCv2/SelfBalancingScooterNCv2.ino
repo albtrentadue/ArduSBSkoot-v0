@@ -61,13 +61,13 @@ byte stato_prog = F_ST_S0;
 #define G_MPU6050 17800 //Misurato.
 //bx,min: Valore minimo di componente frontale bx per rilevare la pendenza della pedana
 //TODO: Verificare sperimentalmente
-#define BX_MINIMO 1700
+#define BX_MINIMO 800
 //bx,veloce: Valore oltre il quale l'asse è più inclinata
 //TODO: Verificare sperimentalmente
-#define BX_VELOCE 2800
+#define BX_VELOCE 1600
 //bz,margine: Valore oltre il quale la componente bz si considera verticale
 //TODO: Verificare sperimentalmente
-#define BZ_MARGINE 17700
+#define BZ_MARGINE 17650
 //Valore nominale del sensore analogico al livello velocità 2 
 //Ottenuto: VEL_SET2 = Vsens,lim2 * rapp.partizione 1/6 * 1023 / 5V
 //TODO: da regolare
@@ -80,9 +80,9 @@ byte stato_prog = F_ST_S0;
 //TODO: da regolare
 #define VEL_FERMO 0
 //Valore massimo assoluto del livello analogico della velocità
-#define VEL_ABS_MAX 150
+#define VEL_ABS_MAX 200
 //Setpoint velocità, indicizzati
-float setpoint_velo[] = {VEL_FERMO, VEL_SET1, VEL_SET2};
+int16_t setpoint_velo[] = {VEL_FERMO, VEL_SET1, VEL_SET2};
 
 //Costanti inclinazione pedana
 #define PF0 0
@@ -99,7 +99,7 @@ int livello_batt = 0;
 //valore minimo del PWM che ferma il motore
 //Min Vthorttle : 1,4V
 //Ottenuto: PWM_THROTTLE_MIN = 1,4V / 5V * 255
-#define PWM_THROTTLE_MIN 20.0
+#define PWM_THROTTLE_MIN 70.0
 //Valore massimo ammesso per il PWM Vthrottle per la marcia avanti
 //Max Vthorttle : 3V (per ora. TODO: dimensionare)
 //Ottenuto: PWM_THROTTLE_MAX = 2.9V / 5V * 255
@@ -107,9 +107,9 @@ int livello_batt = 0;
 //Approccio di controllo del moto: 
 //THR[i+1] = THR[i] + THROTTLE_GAIN * err(v[i]) - KDER * (v[i]-v[i-1])
 //Moltiplicatore del feedback: 
-#define THROTTLE_GAIN 0.05
+#define THROTTLE_GAIN 0.01
 //Fattore derivativo per il controllo PID
-#define KDER 0.8
+#define KDER 0.008
 //Livello di throttle istantaneo - via PWM
 float pwm_throttle_istantaneo = PWM_THROTTLE_MIN;
 
@@ -160,6 +160,11 @@ int16_t media_velo_sx;
 int16_t media_velo;
 //Velocità media al ciclo di controllo precedente
 int16_t media_velo_prec = 0;
+//Variabile di controllo: segnale di errore in velocità
+int16_t err_velo = 0;
+//Variabile di controllo: differenziale di velocità
+int16_t delta_velo = 0;
+
 
 //------ FUNZIONI -------
 
@@ -303,6 +308,8 @@ void calcola_medie(void)
     media_velo_dx = somma_velo_dx / CICLI_CALC;
     media_velo_sx = somma_velo_sx / CICLI_CALC;
 
+    media_velo = (media_velo_dx + media_velo_sx) / 2;
+
     //Ripristina il contatore dei cicli
     cnt_calc = CICLI_CALC;
   }
@@ -314,6 +321,7 @@ void calcola_medie(void)
  * Da usare solo in caso di intervento urgente.
  */
 void abort_completo(void) {
+    Serial.println(F("Abort completo"));
     digitalWrite(FRENATA_DX, HIGH);
     digitalWrite(FRENATA_SX, HIGH);
     analogWrite(PWM_DX, 0);
@@ -552,11 +560,15 @@ void applica_pwm(void)
   //Questo è un sistema discreto lineare: dovrebbe essere progettato come PID
   //Approccio di controllo del moto: 
   //THR[i+1] = THR[i] + THROTTLE_GAIN * err(v[i]) - KDER * (v[i]-v[i-1])  
-  //l'indice del throttle target è dato dai 2 bit meno significativi dello stato     
-  pwm_throttle_istantaneo += (THROTTLE_GAIN * (setpoint_velo[stato_prog & 0b11] - media_velo) - KDER * (media_velo - media_velo_prec));  
-  if (presenza) {    
-    analogWrite(PWM_DX, constrain(byte(pwm_throttle_istantaneo), PWM_THROTTLE_MIN, PWM_THROTTLE_MAX));
-    analogWrite(PWM_SX, constrain(byte(pwm_throttle_istantaneo), PWM_THROTTLE_MIN, PWM_THROTTLE_MAX));
+  //l'indice del throttle target è dato dai 2 bit meno significativi dello stato
+  err_velo = setpoint_velo[stato_prog & 0b11] - media_velo;     
+  delta_velo = media_velo - media_velo_prec;
+  pwm_throttle_istantaneo += (THROTTLE_GAIN * err_velo - KDER * delta_velo);    
+  byte pwm_byte = constrain(byte(pwm_throttle_istantaneo), PWM_THROTTLE_MIN, PWM_THROTTLE_MAX);   
+  //if (presenza) {    
+  if (true) {
+    analogWrite(PWM_DX, pwm_byte);
+    analogWrite(PWM_SX, pwm_byte);
   }
   else {
     //Non aziona i motori se non è premuto il pulsante di presenza
@@ -609,11 +621,14 @@ void report_status(void)
     Serial.print(F(";XM;"));Serial.print(media_x_acc, DEC);    
     Serial.print(F(";VD;"));Serial.print(media_velo_dx, DEC);
     Serial.print(F(";VS;"));Serial.print(media_velo_sx, DEC);
+    Serial.print(F(";V;"));Serial.print(media_velo, DEC);
+    Serial.print(F(";ER;"));Serial.print(err_velo, DEC);
+    Serial.print(F(";DV;"));Serial.print(delta_velo, DEC);        
     Serial.print(F(";TH;"));Serial.print(pwm_throttle_istantaneo, 1);    
     Serial.print(F(";ID;"));Serial.print(inversione_dx, DEC);
     Serial.print(F(";IS;"));Serial.print(inversione_sx, DEC);  
-    Serial.print(F(";B;"));Serial.print(livello_batt, DEC);
-    Serial.print(F(";C;"));Serial.print(t_acc, DEC);    
+    //Serial.print(F(";B;"));Serial.print(livello_batt, DEC);
+    //Serial.print(F(";C;"));Serial.print(t_acc, DEC);        
     Serial.println();
 
     cnt_comm = CICLI_COMM;
