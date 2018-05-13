@@ -5,6 +5,13 @@
  * It drives 2 brushless controllers for both speed and direction and is 
  * controlled by a Wii Nunchuck
  * 
+ * Seconda versione controllo:
+ * - 2 possibili pendenze definiscono 2 set point di velocità angolare in avanti
+ * - 1 solo set-point per la marcia all'indietro
+ * - Grandezza controllata: Velocità angolare (W)
+ * - Controreazione sulla velocità con componente derivativa: 
+ *   -- gli incrementi di Vt sono propoprzionali alla combinazione: (Wset - W) e delta(W)/delta(t)
+ * 
  * By Alberto Trentadue 2017-2018
  */
 
@@ -25,7 +32,7 @@
 #define FRENATA_SX 5
 #define INVERS_SX 7
 #define MISVEL_SX A2
-//Pulsante di presenza, gestire con debounce
+//Pulsante di presenza. //TODO: gestire con debounce
 #define PRESENZA 8
 #define CONFERME_PRESENZA 10
 byte cnt_presenza = 0;
