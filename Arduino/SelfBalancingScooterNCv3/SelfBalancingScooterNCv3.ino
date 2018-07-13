@@ -29,11 +29,11 @@
 #define PWM_DX 3
 #define FRENATA_DX 2
 #define INVERS_DX 4
-#define MISVEL_DX A1
+#define MISVEL_DX A2
 #define PWM_SX 6
 #define FRENATA_SX 5
 #define INVERS_SX 7
-#define MISVEL_SX A2
+#define MISVEL_SX A1
 //Pulsante di presenza.
 #define PRESENZA 8
 //Numero di test per convalidare la presenza
@@ -72,25 +72,25 @@ byte stato_prog = ST_S0_F;
 #define PREC_REDUX_Z 8
 //bx,min: Valore minimo (ridotto) di componente frontale bx per rilevare la pendenza della pedana
 //TODO: Verificare sperimentalmente
-#define BX_MINIMO 30
+#define BX_MINIMO 50
 //bz,margine: Valore (ridotto) oltre il quale la componente bz si considera verticale
 //TODO: Verificare sperimentalmente
 #define BZ_MARGINE 2200
 //Valore nominale del misuratore tachimetrico set point in avanti (A/D)
 //Ottenuto: VEL_SET_FWD = Vsens,set * rapp.partizione 1/6 * 1023 / 5V
 //TODO: da regolare
-#define VEL_SET_FWD 60
+#define VEL_SET_FWD 200
 //Valore nominale del miusuratore tachimetrico set point in retromarcia (A/D)
 //Ottenuto: VEL_SET_FWD = Vsens,set * rapp.partizione 1/6 * 1023 / 5V
 //TODO: da regolare
-#define VEL_SET_BWD 40
+#define VEL_SET_BWD 150
 //Valore minimo del sensore analogico di velocità che considera il mezzo fermo
 //TODO: da regolare
-#define VEL_FERMO 0
+#define VEL_FERMO 10
 //Valore massimo assoluto del livello analogico della velocità
-#define VEL_ABS_MAX 200
+#define VEL_ABS_MAX 500
 //Setpoint velocità, indicizzati
-int16_t setpoint_velo[] = {VEL_FERMO, VEL_FERMO, VEL_SET_FWD, VEL_SET_BWD};
+int16_t setpoint_velo[] = {0, 0, VEL_SET_FWD, VEL_SET_BWD};
 
 //Costanti inclinazione pedana
 #define PF0 0
@@ -113,9 +113,11 @@ int livello_batt = 0;
 #define PWM_THROTTLE_MAX 150.0
 
 //Livello di throttle istantaneo - via PWM
-float pwm_throttle_istantaneo = 0.0;
+float pwm_throttle_istantaneo_dx = 0.0;
+float pwm_throttle_istantaneo_sx = 0.0;
 //Valore effettivamente applicato al PWM
-byte pwm_byte = PWM_THROTTLE_MIN;
+byte pwm_byte_dx = PWM_THROTTLE_MIN;
+byte pwm_byte_sx = PWM_THROTTLE_MIN;
 
 //Stato comando di frenata. Attivo ALTO, pilota un NPN in saturazione
 byte frenata = LOW;
@@ -131,7 +133,7 @@ boolean inv_da_applicare_sx = false;
 byte cnt_inerzia_stato = 0;
 
 //Durata di un ciclo loop in msec
-#define RITARDO_MAIN 3
+#define RITARDO_MAIN 2
 
 #define CICLI_MEDIE 50 // Campioni considerati per le medie
 byte cnt_calc = CICLI_MEDIE;
@@ -161,13 +163,16 @@ int32_t somma_velo_sx = 0;
 int16_t serie_velo_sx[CICLI_MEDIE];
 int16_t media_velo_sx;
 //Velocita media generale - in assenza di nunchuk
-int16_t media_velo;
+//int16_t media_velo;
 //Velocità media al ciclo di controllo precedente
-int16_t media_velo_prec = 0;
+int16_t media_velo_prec_dx = 0;
+int16_t media_velo_prec_sx = 0;
 //Errore rispetto al setpoint
-int16_t err_velo = 0;
+int16_t err_velo_dx = 0;
+int16_t err_velo_sx = 0;
 //Variabile di controllo: differenziale di velocità
-int16_t delta_velo = 0;
+int16_t delta_velo_dx = 0;
+int16_t delta_velo_sx = 0;
 
 //------ FUNZIONI -------
 
@@ -265,12 +270,12 @@ void leggi_accelerometro(void)
 void leggi_analogici(void)
 {
   livello_batt = analogRead(VALIM_ANALOG);
-  //Scartare la prima lettura nel cambio canale
+  //Scartare la prima lettura nel cambio canale A/D
   analogRead(MISVEL_DX);
   int16_t velo_dx = analogRead(MISVEL_DX);
   somma_velo_dx += (velo_dx - serie_velo_dx[ultimo_campione]);
   serie_velo_dx[ultimo_campione] = velo_dx;
-  //Scartare la prima lettura nel cambio canale
+  //Scartare la prima lettura nel cambio canale A/D
   analogRead(MISVEL_SX);  
   int16_t velo_sx = analogRead(MISVEL_SX);  
   somma_velo_sx += (velo_sx - serie_velo_sx[ultimo_campione]);
@@ -318,7 +323,7 @@ void calcola_medie(void)
   media_velo_sx = somma_velo_sx / CICLI_MEDIE;
 
   //Considero la somma invece della media: equivalente, salvo fattore moltiplicativo
-  media_velo = media_velo_dx + media_velo_sx;
+  //media_velo = media_velo_dx + media_velo_sx;
 }
 
 /**
@@ -369,7 +374,7 @@ byte inclinazione_pedana(void) {
  * TODO: con l'introduzione del controllo direzione, deve essere rivisto!
  */
 boolean stato_velo_ruote(void) {
-  return (media_velo > (2 * VEL_FERMO));
+  return ((media_velo_dx > VEL_FERMO) || (media_velo_sx > VEL_FERMO));
 }
 
 /**
@@ -432,6 +437,10 @@ void transiz_stato(void)
         case PFB:
           nuovo_stato_prog = MV_S0_F;          
           break;
+        case PF1:
+          if (!stato_velo_corr) 
+            nuovo_stato_prog = ST_S1_F;
+          break;          
       }
       break;
     //---------------------------------//
@@ -476,6 +485,9 @@ void transiz_stato(void)
         case PF0:
         case PF1:               
           nuovo_stato_prog = MV_S0_B;
+        case PFB:
+          if (!stato_velo_corr)
+            nuovo_stato_prog = ST_S1_B;
       }
       break;
   }
@@ -508,9 +520,9 @@ void transiz_stato(void)
 }
 
 //Moltiplicatore del feedback: 
-#define THROTTLE_GAIN 0.01
+#define THROTTLE_GAIN 0.005
 //Fattore derivativo per il controllo PID
-#define KDER 0.008
+#define KDER 0.01
 
 /**
  * Calcola ed applica i valori dei PWM di thorttle delle ruote
@@ -525,16 +537,20 @@ void applica_pwm(void)
   //Approccio di controllo del moto: BANALE
   //THR[i+1] = THR[i] + THROTTLE_GAIN * err(v[i])
   //l'indice del throttle target è dato dai 2 bit meno significativi dello stato
-  err_velo = setpoint_velo[stato_prog & 0b11] - media_velo;
-  delta_velo = media_velo - media_velo_prec;     
+  err_velo_dx = setpoint_velo[stato_prog & 0b11] - media_velo_dx;
+  err_velo_sx = setpoint_velo[stato_prog & 0b11] - media_velo_sx;
+  delta_velo_dx = media_velo_dx - media_velo_prec_dx;
+  delta_velo_sx = media_velo_sx - media_velo_prec_sx;     
   //pwm_throttle_istantaneo += (THROTTLE_GAIN * err_velo - KDER * delta_velo);
-  pwm_throttle_istantaneo += (THROTTLE_GAIN * err_velo);  
-  pwm_byte = PWM_THROTTLE_MIN + byte(constrain(pwm_throttle_istantaneo,0.0,PWM_THROTTLE_MAX));  
+  pwm_throttle_istantaneo_dx += (THROTTLE_GAIN * err_velo_dx - KDER * delta_velo_dx);
+  pwm_throttle_istantaneo_sx += (THROTTLE_GAIN * err_velo_sx - KDER * delta_velo_sx);  
+  pwm_byte_dx = PWM_THROTTLE_MIN + byte(constrain(pwm_throttle_istantaneo_dx,0.0,PWM_THROTTLE_MAX));
+  pwm_byte_sx = PWM_THROTTLE_MIN + byte(constrain(pwm_throttle_istantaneo_sx,0.0,PWM_THROTTLE_MAX));  
   
   //if (presenza) {    
   if (true) {
-    analogWrite(PWM_DX, pwm_byte);
-    analogWrite(PWM_SX, pwm_byte);
+    analogWrite(PWM_DX, pwm_byte_dx);
+    analogWrite(PWM_SX, pwm_byte_sx);
   }
   else {
     //Non aziona i motori se non è premuto il pulsante di presenza
@@ -544,7 +560,8 @@ void applica_pwm(void)
     digitalWrite(FRENATA_SX, HIGH);        
   }
   //Salva l'ultima velocità usata nel ciclo di controllo
-  media_velo_prec = media_velo;  
+  media_velo_prec_dx = media_velo_dx;
+  media_velo_prec_sx = media_velo_sx;  
 }
 
 /**
@@ -583,16 +600,19 @@ void report_status(void)
   cnt_comm--;
   if (cnt_comm == 0) {
     Serial.print(F("S;"));Serial.print(stato_prog, BIN);
-    Serial.print(F(";ZM;"));Serial.print(media_z_acc, DEC);     
+    //Serial.print(F(";ZM;"));Serial.print(media_z_acc, DEC);     
     Serial.print(F(";XM;"));Serial.print(media_x_acc, DEC);    
     Serial.print(F(";VD;"));Serial.print(media_velo_dx, DEC);
     Serial.print(F(";VS;"));Serial.print(media_velo_sx, DEC);
-    Serial.print(F(";V;"));Serial.print(media_velo, DEC);
-    Serial.print(F(";ER;"));Serial.print(err_velo, DEC); 
-    Serial.print(F(";DV;"));Serial.print(delta_velo, DEC); 
-    Serial.print(F(";TH;"));Serial.print(pwm_byte, DEC);    
-    Serial.print(F(";ID;"));Serial.print(inversione_dx, DEC);
-    Serial.print(F(";IS;"));Serial.print(inversione_sx, DEC);  
+    //Serial.print(F(";V;"));Serial.print(media_velo, DEC);
+    Serial.print(F(";Ed;"));Serial.print(err_velo_dx, DEC);
+    Serial.print(F(";Es;"));Serial.print(err_velo_sx, DEC); 
+    Serial.print(F(";Dd;"));Serial.print(delta_velo_dx, DEC);
+    Serial.print(F(";Ds;"));Serial.print(delta_velo_sx, DEC); 
+    Serial.print(F(";Td;"));Serial.print(pwm_byte_dx, DEC);
+    Serial.print(F(";Ts;"));Serial.print(pwm_byte_sx, DEC);    
+    Serial.print(F(";Id;"));Serial.print(inversione_dx, DEC);
+    Serial.print(F(";Is;"));Serial.print(inversione_sx, DEC);  
     //Serial.print(F(";B;"));Serial.print(livello_batt, DEC);
     //Serial.print(F(";C;"));Serial.print(t_acc, DEC);        
     Serial.println();
