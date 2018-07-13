@@ -573,7 +573,7 @@ void report_status(void)
     Serial.print(F(";V;"));Serial.print(media_velo, DEC);
     Serial.print(F(";ER;"));Serial.print(err_velo, DEC); 
     Serial.print(F(";DV;"));Serial.print(delta_velo, DEC); 
-    Serial.print(F(";TH;"));Serial.print(pwm_byte, 1);    
+    Serial.print(F(";TH;"));Serial.print(pwm_byte, DEC);    
     Serial.print(F(";ID;"));Serial.print(inversione_dx, DEC);
     Serial.print(F(";IS;"));Serial.print(inversione_sx, DEC);  
     //Serial.print(F(";B;"));Serial.print(livello_batt, DEC);
