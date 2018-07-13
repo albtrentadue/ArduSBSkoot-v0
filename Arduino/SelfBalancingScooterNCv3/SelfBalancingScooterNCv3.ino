@@ -15,6 +15,8 @@
  * By Alberto Trentadue 2017-2018
  */
 
+#define HB_CAPOVOLTO
+
 //Per I2C
 #include <Wire.h>
 
@@ -32,8 +34,9 @@
 #define FRENATA_SX 5
 #define INVERS_SX 7
 #define MISVEL_SX A2
-//Pulsante di presenza. //TODO: gestire con debounce
+//Pulsante di presenza.
 #define PRESENZA 8
+//Numero di test per convalidare la presenza
 #define CONFERME_PRESENZA 10
 byte cnt_presenza = 0;
 bool presenza = false;
@@ -59,22 +62,25 @@ bool presenza = false;
 #define ST_S1_B 0b011
 
 //Stato di funzionamento del programma
-byte stato_prog = ST_S0_B;
+byte stato_prog = ST_S0_F;
 
 //-- COSTANTI PER LA GESTIONE ACCELERAZIONE
 //Valore di g misurato dal MPU6050 da calibrare a mano.
 #define G_MPU6050 17800 //Misurato.
-//bx,min: Valore minimo di componente frontale bx per rilevare la pendenza della pedana
+//Coefficienti di riduzione di precisione per divisione
+#define PREC_REDUX_X 16
+#define PREC_REDUX_Z 8
+//bx,min: Valore minimo (ridotto) di componente frontale bx per rilevare la pendenza della pedana
 //TODO: Verificare sperimentalmente
-#define BX_MINIMO 800
-//bz,margine: Valore oltre il quale la componente bz si considera verticale
+#define BX_MINIMO 30
+//bz,margine: Valore (ridotto) oltre il quale la componente bz si considera verticale
 //TODO: Verificare sperimentalmente
-#define BZ_MARGINE 17650
-//Valore nominale del sensore analogico del set point in avanti
+#define BZ_MARGINE 2200
+//Valore nominale del misuratore tachimetrico set point in avanti (A/D)
 //Ottenuto: VEL_SET_FWD = Vsens,set * rapp.partizione 1/6 * 1023 / 5V
 //TODO: da regolare
 #define VEL_SET_FWD 60
-//Valore nominale del sensore analogico del set point in retromarcia
+//Valore nominale del miusuratore tachimetrico set point in retromarcia (A/D)
 //Ottenuto: VEL_SET_FWD = Vsens,set * rapp.partizione 1/6 * 1023 / 5V
 //TODO: da regolare
 #define VEL_SET_BWD 40
@@ -105,12 +111,7 @@ int livello_batt = 0;
 //Max Vthorttle : 3V (per ora. TODO: dimensionare)
 //Ottenuto: PWM_THROTTLE_MAX = 2.9V / 5V * 255
 #define PWM_THROTTLE_MAX 150.0
-//Approccio di controllo del moto: 
-//THR[i+1] = THR[i] + THROTTLE_GAIN * err(v[i]) - KDER * (v[i]-v[i-1])
-//Moltiplicatore del feedback: 
-#define THROTTLE_GAIN 0.01
-//Fattore derivativo per il controllo PID
-#define KDER 0.008
+
 //Livello di throttle istantaneo - via PWM
 float pwm_throttle_istantaneo = 0.0;
 //Valore effettivamente applicato al PWM
@@ -235,13 +236,24 @@ void leggi_accelerometro(void)
 {
   //Esegue la procedura di accesso all'MPU-6050
   leggi_mpu6050();
+  //Riduzione di precisione
+  z_acc /= PREC_REDUX_Z;
+  x_acc /= PREC_REDUX_X;
   
   //aggiorna i campioni delle accelerazioni
+#ifndef HB_CAPOVOLTO
   //z_acc e x_acc sono al negativo per come è stato montato l'MPU6050
   somma_z_acc += (-z_acc - serie_z[ultimo_campione]);
   somma_x_acc += (-x_acc - serie_x[ultimo_campione]);
   serie_z[ultimo_campione] = -z_acc;
-  serie_x[ultimo_campione] = -x_acc;    
+  serie_x[ultimo_campione] = -x_acc;
+#else
+  somma_z_acc += (z_acc - serie_z[ultimo_campione]);
+  somma_x_acc += (x_acc - serie_x[ultimo_campione]);
+  serie_z[ultimo_campione] = z_acc;
+  serie_x[ultimo_campione] = x_acc;
+#endif
+      
 }
 
 /**
@@ -253,14 +265,13 @@ void leggi_accelerometro(void)
 void leggi_analogici(void)
 {
   livello_batt = analogRead(VALIM_ANALOG);
-  //Ritardo MUX
-  delayMicroseconds(500);
-   
+  //Scartare la prima lettura nel cambio canale
+  analogRead(MISVEL_DX);
   int16_t velo_dx = analogRead(MISVEL_DX);
   somma_velo_dx += (velo_dx - serie_velo_dx[ultimo_campione]);
   serie_velo_dx[ultimo_campione] = velo_dx;
-  //Ritardo MUX
-  delayMicroseconds(500);
+  //Scartare la prima lettura nel cambio canale
+  analogRead(MISVEL_SX);  
   int16_t velo_sx = analogRead(MISVEL_SX);  
   somma_velo_sx += (velo_sx - serie_velo_sx[ultimo_campione]);
   serie_velo_sx[ultimo_campione] = velo_sx;
@@ -345,11 +356,10 @@ void ctrl_limiti_max() {
  * PFB: Inclinata all'indietro
  */
 byte inclinazione_pedana(void) {
-  if (media_z_acc <= BZ_MARGINE) {
-    if (media_x_acc <= -BX_MINIMO) return PFB;
-    if (media_x_acc >= BX_MINIMO) return PF1;
-  }
-  return PF0;
+  //if (media_z_acc <= BZ_MARGINE) {
+  if (media_x_acc <= -BX_MINIMO) return PFB;
+  if (media_x_acc >= BX_MINIMO) return PF1;
+  else return PF0;
 }
 
 /**
@@ -497,6 +507,11 @@ void transiz_stato(void)
     cnt_inerzia_stato = 0;
 }
 
+//Moltiplicatore del feedback: 
+#define THROTTLE_GAIN 0.01
+//Fattore derivativo per il controllo PID
+#define KDER 0.008
+
 /**
  * Calcola ed applica i valori dei PWM di thorttle delle ruote
  * Il valore dipende da pwm_throttle e dalla lettura del nunchuck
@@ -507,13 +522,15 @@ void applica_pwm(void)
   //TODO: applicare la calibrazione analogica di compensazione DX/SX
 
   //Questo è un sistema discreto lineare: dovrebbe essere progettato come PID
-  //Approccio di controllo del moto: 
+  //Approccio di controllo del moto: BANALE
   //THR[i+1] = THR[i] + THROTTLE_GAIN * err(v[i])
   //l'indice del throttle target è dato dai 2 bit meno significativi dello stato
   err_velo = setpoint_velo[stato_prog & 0b11] - media_velo;
   delta_velo = media_velo - media_velo_prec;     
-  pwm_throttle_istantaneo += (THROTTLE_GAIN * err_velo - KDER * delta_velo);
+  //pwm_throttle_istantaneo += (THROTTLE_GAIN * err_velo - KDER * delta_velo);
+  pwm_throttle_istantaneo += (THROTTLE_GAIN * err_velo);  
   pwm_byte = PWM_THROTTLE_MIN + byte(constrain(pwm_throttle_istantaneo,0.0,PWM_THROTTLE_MAX));  
+  
   //if (presenza) {    
   if (true) {
     analogWrite(PWM_DX, pwm_byte);
