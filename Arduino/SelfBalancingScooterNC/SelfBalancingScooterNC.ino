@@ -6,13 +6,14 @@
  * controlled by a Wii Nunchuck
  * 
  * Prima versione controllo:
- * - 2 possibili pendenze definiscono 2 set point in avanti
- * - 1 solo set-point per la marcia all'indietro
- * - Grandezza controllata: tensione del throttle (Vt), considerando la velocità proporzionale a Vt
- * - Controreazione sul throttle: gli incrementi di Vt sono propoprzionali all'errore Vset - Vt 
+ * - Velocità angolare proporzionale all'angolo di pendenza, limitata superiormente
+ * - Diverse costanti per marcia avanti ed indietro
  * 
  * By Alberto Trentadue 2017-2018
  */
+
+//#define HB_CAPOVOLTO
+#define PRESENZA_SEMPRE
 
 //Per I2C
 #include <Wire.h>
@@ -26,13 +27,14 @@
 #define PWM_DX 3
 #define FRENATA_DX 2
 #define INVERS_DX 4
-#define MISVEL_DX A1
+#define MISVEL_DX A2
 #define PWM_SX 6
 #define FRENATA_SX 5
 #define INVERS_SX 7
-#define MISVEL_SX A2
-//Pulsante di presenza, gestire con debounce
+#define MISVEL_SX A1
+//Pulsante di presenza.
 #define PRESENZA 8
+//Numero di test per convalidare la presenza
 #define CONFERME_PRESENZA 10
 byte cnt_presenza = 0;
 bool presenza = false;
@@ -46,66 +48,42 @@ bool presenza = false;
 #define ADDR_NUNCHUCK_R 0xA5
 #define ADDR_ACCEL 0x68 //0b1101000
 
-//Stati della macchina a stati del controllo discreto
+//Stati della macchina a stati del controllo discreto - V2
 //Fare riferimento alla documentazione "Project.xls"
-#define F_LV0_PW0 0b000000
-#define F_LV0_PW1 0b000001
-#define F_LV0_PW2 0b000010
-#define F_LV1_PW0 0b000100
-#define F_LV1_PW1 0b000101
-#define F_LV1_PW2 0b000110
-#define F_LV2_PW0 0b001000
-#define F_LV2_PW1 0b001001
-#define F_LV2_PW2 0b001010
-#define F_LVX_PW0 0b010000
-#define F_LVX_PW1 0b010001
-#define F_LVX_PW2 0b010010
-#define B_LV0_PW0 0b100000
-#define B_LV0_PW1 0b100001
-#define B_LV1_PW0 0b100100
-#define B_LV1_PW1 0b100101
-#define B_LVX_PW0 0b110000
-#define B_LVX_PW1 0b110001
+#define MV_S0_F 0b100
+#define MV_S1_F 0b110
+#define ST_S0_F 0b000
+#define ST_S1_F 0b010
+#define MV_S0_B 0b101
+#define MV_S1_B 0b111
+#define ST_S0_B 0b001
+#define ST_S1_B 0b011
+
 //Stato di funzionamento del programma
-byte stato_prog = F_LV0_PW0;
+byte stato_prog = ST_S0_F;
 
 //-- COSTANTI PER LA GESTIONE ACCELERAZIONE
 //Valore di g misurato dal MPU6050 da calibrare a mano.
 #define G_MPU6050 17800 //Misurato.
-//bx,min: Valore minimo di componente frontale bx per rilevare la pendenza della pedana
+//Coefficienti di riduzione di precisione per divisione
+#define PREC_REDUX_X 16
+#define PREC_REDUX_Z 8
+//bx,min: Valore minimo (ridotto) di componente frontale bx per rilevare la pendenza della pedana
 //TODO: Verificare sperimentalmente
-#define BX_MINIMO 1700
-//bx,veloce: Valore oltre il quale l'asse è più inclinata
+#define BX_MINIMO 50
+//bx,max: Valore massimo (ridotto) di componente frontale bx 
 //TODO: Verificare sperimentalmente
-#define BX_VELOCE 2800
-//bz,margine: Valore oltre il quale la componente bz si considera verticale
+#define BX_MASSIMO 200
+//bx,inv: Valore minimo (ridotto) di componente frontale bx per decidere la direzione
 //TODO: Verificare sperimentalmente
-#define BZ_MARGINE 17700
-//Valore limite del sensore analogico al livello velocità 2 
-//Ottenuto: VEL_LIM2 = Vsens,lim2 * rapp.partizione 1/3 * 1023 / 5V
-//TODO: da regolare
-#define VEL_LIM2 198
-//Valore limite del sensore analogico al livello velocità 1
-//Ottenuto: VEL_LIM1 = Vsens,lim1 * rapp.partizione 1/3 * 1023 / 5V
-//TODO: da regolare
-#define VEL_LIM1 79
-//Valore minimo del sensore analogico di velocità che considera il mezzo fermo
-//TODO: da regolare
-#define VEL_FERMO 8
-//Valore massimo assoluto del livello analogico della velocità
-#define VEL_ABS_MAX 300
-
-//Costanti livello di velocità
-#define LV0 0b000
-#define LV1 0b001
-#define LV2 0b010
-#define LVX 0b100
+#define BX_DIREZIONE 20
 
 //Costanti inclinazione pedana
-#define PF0 0
+#define PP0 0
 #define PF1 1
 #define PF2 2
-#define PFB 255
+#define PB1 3
+#define PB2 4
 
 // Livelli analogici del partitore batteria
 // TODO: Calibrare rispetto al valore massimo della batteria
@@ -114,26 +92,29 @@ byte stato_prog = F_LV0_PW0;
 int livello_batt = 0;
 
 //valore minimo del PWM che ferma il motore
-//Min Vthorttle : 1,4V
-//Ottenuto: PWM_THROTTLE_MIN = 1,4V / 5V * 255
-#define PWM_THROTTLE_MIN 20.0
-//Valore massimo ammesso per il PWM Vthrottle per la marcia avanti
-//Max Vthorttle : 3V (per ora. TODO: dimensionare)
-//Ottenuto: PWM_THROTTLE_MAX = 3,1V / 5V * 255
-#define PWM_THROTTLE_MAX 160.0
-//Valore del throttle per l'accelerazione moderata
-#define PWM_THROTTLE_MODERATE 100.0
-//Valore del throttle per l'accelerazione rapida
-#define PWM_THROTTLE_FAST 130.0
-//Moltiplicatore del feedback per il throttle: THR[i+1] = THR[i] + THROTTLE_GAIN * err(THR[i])
-#define THROTTLE_GAIN 0.05
-//Livello di throttle asintotico - via PWM
-float pwm_throttle[] = {PWM_THROTTLE_MIN, PWM_THROTTLE_MODERATE, PWM_THROTTLE_FAST};
-//Livello di throttle istantaneo - via PWM
-float pwm_throttle_istantaneo = PWM_THROTTLE_MIN;
+#define PWM_THROTTLE_MIN 120
+//Variazione ampiezza throttle in marcia avanti
+//TODO: da regolare
+#define THR_MAX_FWD 40
+//Variazione ampiezza throttle in marcia indietro
+//TODO: da regolare
+#define THR_MAX_BWD 30
+//Setpoint velocità, indicizzati
+int16_t throttles_max[] = {0, 0, THR_MAX_FWD, THR_MAX_BWD};
 
-//Stato comando di frenata. Attivo ALTO, pilota un NPN in saturazione
-byte frenata = LOW;
+//Valore minimo del sensore analogico di velocità che considera il mezzo fermo
+//TODO: da regolare
+#define VEL_FERMO 10
+//Valore massimo assoluto del livello analogico della velocità
+#define VEL_ABS_MAX 500
+
+//Livello di throttle da applicare per il PWM
+byte ampiezza_thr_dx = 0;
+byte ampiezza_thr_sx = 0;
+//Valore effettivamente applicato al PWM
+byte pwm_byte_dx = PWM_THROTTLE_MIN;
+byte pwm_byte_sx = PWM_THROTTLE_MIN;
+
 //Stati comando di inversione marcia. Attivo ALTO, pilota un NPN in saturazione
 byte inversione_dx = LOW;
 byte inversione_sx = LOW;
@@ -146,10 +127,10 @@ boolean inv_da_applicare_sx = false;
 byte cnt_inerzia_stato = 0;
 
 //Durata di un ciclo loop in msec
-#define RITARDO_MAIN 4
+#define RITARDO_MAIN 2
 
-#define CICLI_CALC 20 // cicli da attendere per effettuare i calcoli
-byte cnt_calc = CICLI_CALC;
+#define CICLI_MEDIE 50 // Campioni considerati per le medie
+byte cnt_calc = CICLI_MEDIE;
 #define CICLI_HEART 100 // cicli da attendere per l'heartbeat
 byte cnt_heart = CICLI_HEART;
 byte heart = 0;
@@ -158,23 +139,34 @@ byte cnt_comm = CICLI_COMM;
 
 //Variabili per le misure dell'accelerometro MPU-6050
 byte ultimo_campione=0;
-int16_t z_acc;
+int16_t z_acc; //Globale: usata nel MPU-6050
 int32_t somma_z_acc = 0;
-int16_t serie_z[CICLI_CALC];
+int16_t serie_z[CICLI_MEDIE];
 int16_t media_z_acc;
-int16_t x_acc;
+int16_t x_acc; //Globale: usata nel MPU-6050
 int32_t somma_x_acc = 0;
-int16_t serie_x[CICLI_CALC];
+int16_t serie_x[CICLI_MEDIE];
 int16_t media_x_acc;
-int16_t t_acc;
+int16_t t_acc; //Globale: usata nel MPU-6050
 
 //Variabili per le misure della velocità delle ruote
 int32_t somma_velo_dx = 0;
-int16_t serie_velo_dx[CICLI_CALC];
+int16_t serie_velo_dx[CICLI_MEDIE];
 int16_t media_velo_dx;
 int32_t somma_velo_sx = 0;
-int16_t serie_velo_sx[CICLI_CALC];
+int16_t serie_velo_sx[CICLI_MEDIE];
 int16_t media_velo_sx;
+//Velocita media generale - in assenza di nunchuk
+//int16_t media_velo;
+//Velocità media al ciclo di controllo precedente
+int16_t media_velo_prec_dx = 0;
+int16_t media_velo_prec_sx = 0;
+//Errore rispetto al setpoint
+int16_t err_velo_dx = 0;
+int16_t err_velo_sx = 0;
+//Variabile di controllo: differenziale di velocità
+int16_t delta_velo_dx = 0;
+int16_t delta_velo_sx = 0;
 
 //------ FUNZIONI -------
 
@@ -190,6 +182,8 @@ void setup() {
   pinMode(PWM_SX, OUTPUT);  
   pinMode(FRENATA_DX, OUTPUT);
   pinMode(FRENATA_SX, OUTPUT);
+  pinMode(INVERS_DX, OUTPUT);
+  pinMode(INVERS_SX, OUTPUT);  
   pinMode(STATUS_LED, OUTPUT);
   pinMode(PRESENZA, INPUT_PULLUP);
   pinMode(FUNC1, OUTPUT);
@@ -200,12 +194,18 @@ void setup() {
 
   //Azzera i campioni da mediare
   byte i;
-  for (i=0; i<CICLI_CALC; i++) {
+  for (i=0; i<CICLI_MEDIE; i++) {
     serie_z[i]=0;
     serie_x[i]=0;
     serie_velo_dx[i]=0;
     serie_velo_sx[i]=0;
   }
+
+  //Stati iniziali switch controllo
+  digitalWrite(FRENATA_DX, LOW);
+  digitalWrite(FRENATA_SX, LOW);
+  digitalWrite(INVERS_DX, LOW);
+  digitalWrite(INVERS_SX, LOW);  
 
   //Il controller deve essere tenuto con throttle a zero
   //se l'hoverboard era stato spento in modo brusco
@@ -222,10 +222,9 @@ void loop() {
   leggi_nunchuck();
   leggi_presenza(); 
   calcola_medie();
-  ultimo_campione = (ultimo_campione + 1) % CICLI_CALC;   
+  ultimo_campione = (ultimo_campione + 1) % CICLI_MEDIE;   
   transiz_stato();
   ctrl_limiti_max();
-  applica_frenata();
   applica_inversione();
   applica_pwm();
   report_status();
@@ -243,13 +242,24 @@ void leggi_accelerometro(void)
 {
   //Esegue la procedura di accesso all'MPU-6050
   leggi_mpu6050();
+  //Riduzione di precisione
+  z_acc /= PREC_REDUX_Z;
+  x_acc /= PREC_REDUX_X;
   
   //aggiorna i campioni delle accelerazioni
+#ifndef HB_CAPOVOLTO
   //z_acc e x_acc sono al negativo per come è stato montato l'MPU6050
   somma_z_acc += (-z_acc - serie_z[ultimo_campione]);
   somma_x_acc += (-x_acc - serie_x[ultimo_campione]);
   serie_z[ultimo_campione] = -z_acc;
-  serie_x[ultimo_campione] = -x_acc;    
+  serie_x[ultimo_campione] = -x_acc;
+#else
+  somma_z_acc += (z_acc - serie_z[ultimo_campione]);
+  somma_x_acc += (x_acc - serie_x[ultimo_campione]);
+  serie_z[ultimo_campione] = z_acc;
+  serie_x[ultimo_campione] = x_acc;
+#endif
+      
 }
 
 /**
@@ -261,16 +271,13 @@ void leggi_accelerometro(void)
 void leggi_analogici(void)
 {
   livello_batt = analogRead(VALIM_ANALOG);
-  //Ritardo MUX
-  delayMicroseconds(500);
-  
-  //int16_t velo_dx=0;  
+  //Scartare la prima lettura nel cambio canale A/D
+  analogRead(MISVEL_DX);
   int16_t velo_dx = analogRead(MISVEL_DX);
   somma_velo_dx += (velo_dx - serie_velo_dx[ultimo_campione]);
   serie_velo_dx[ultimo_campione] = velo_dx;
-  //Ritardo MUX
-  delayMicroseconds(500);
-  //int16_t velo_sx=0;
+  //Scartare la prima lettura nel cambio canale A/D
+  analogRead(MISVEL_SX);  
   int16_t velo_sx = analogRead(MISVEL_SX);  
   somma_velo_sx += (velo_sx - serie_velo_sx[ultimo_campione]);
   serie_velo_sx[ultimo_campione] = velo_sx;
@@ -310,17 +317,12 @@ void leggi_presenza(void)
  */
 void calcola_medie(void)
 {
-  cnt_calc--;
-  if (cnt_calc == 0) { 
-    media_z_acc = somma_z_acc / CICLI_CALC;
-    media_x_acc = somma_x_acc / CICLI_CALC;
-  
-    media_velo_dx = somma_velo_dx / CICLI_CALC;
-    media_velo_sx = somma_velo_sx / CICLI_CALC;
+  media_z_acc = somma_z_acc / CICLI_MEDIE;
+  media_x_acc = somma_x_acc / CICLI_MEDIE;
 
-    //Ripristina il contatore dei cicli
-    cnt_calc = CICLI_CALC;
-  }
+  media_velo_dx = somma_velo_dx / CICLI_MEDIE;
+  media_velo_sx = somma_velo_sx / CICLI_MEDIE;
+
 }
 
 /**
@@ -329,6 +331,7 @@ void calcola_medie(void)
  * Da usare solo in caso di intervento urgente.
  */
 void abort_completo(void) {
+    Serial.println(F("Abort completo"));
     digitalWrite(FRENATA_DX, HIGH);
     digitalWrite(FRENATA_SX, HIGH);
     analogWrite(PWM_DX, 0);
@@ -353,55 +356,50 @@ void ctrl_limiti_max() {
  * agli angoli misurati.
  * Valori possibili:
  * PF0: orizzontale
- * PF1: Poco inclinata
- * PF2: Inclinata
+ * PF1: Inclinata in avanti
  * PFB: Inclinata all'indietro
  */
-byte inclinazione_pedana(void) {
-  if (media_z_acc <= BZ_MARGINE) {
-    if (media_x_acc <= -BX_MINIMO) return PFB;
-    if (media_x_acc >= BX_VELOCE) return PF2;
-    if (media_x_acc >= BX_MINIMO) return PF1;
-  }
-  return PF0;
+byte stato_inclinazione(void) {  
+  if (media_x_acc <= -BX_MINIMO) return PB2;
+  if (media_x_acc >= BX_MINIMO) return PF2;
+  if (media_x_acc <= -BX_DIREZIONE) return PB1;
+  if (media_x_acc >= BX_DIREZIONE) return PF1;
+  
+  return PP0;
 }
 
 /**
  * Ritorna lo stato di velocità media tra le due ruote
+ * true: c'è movimento
+ * 
+ * TODO: con l'introduzione del controllo direzione, deve essere rivisto!
  */
-byte stato_velo_ruote(void) {
-  int16_t mv = media_velo_dx + media_velo_sx;
-  if (mv < (2 * VEL_FERMO)) return LV0;
-  if (mv < (2 * VEL_LIM1)) return LV1;
-  if (mv < (2 * VEL_LIM2)) {
-    if (pwm_throttle_istantaneo == PWM_THROTTLE_FAST) return LV2;
-  }
-  return LVX;
+boolean stato_velo_ruote(void) {
+  return ((media_velo_dx > VEL_FERMO) || (media_velo_sx > VEL_FERMO));
 }
+
 /**
  * Gestisce lo stato di funzionamento del programma e le sue transizioni.
- * Eseguito ogni CICLI_CALC iterazioni
+ * Eseguito ogni CICLI_MEDIE iterazioni
  */
 void transiz_stato(void) 
 { 
-  byte incl_pedana = inclinazione_pedana();  
-  byte stato_velo_corr = stato_velo_ruote();
+  byte incl_pedana = stato_inclinazione();  
+  bool stato_velo_corr = stato_velo_ruote();
   byte nuovo_stato_prog = stato_prog;
   byte nuova_inversione_sx = inversione_sx;
   byte nuova_inversione_dx = inversione_dx;
      
   //Seleziona in base allo stato del programma
   switch(stato_prog) {
-    case F_LV0_PW0:
+    case ST_S0_F:
       switch (incl_pedana) {
-        case PF1: 
-          nuovo_stato_prog = F_LV0_PW1;          
+        case PF2: 
+          nuovo_stato_prog = ST_S1_F;          
           break;
-        case PF2:
-          nuovo_stato_prog = F_LV0_PW2;          
-          break;
-        case PFB:
-          nuovo_stato_prog = B_LV0_PW0;
+        case PB1:
+        case PB2:
+          nuovo_stato_prog = ST_S0_B;
           inv_da_applicare_dx = true;
           inv_da_applicare_sx = true;
           nuova_inversione_sx = HIGH;
@@ -409,239 +407,96 @@ void transiz_stato(void)
       }
       break;
     //---------------------------------//
-    case F_LV0_PW1:
+    case ST_S1_F:
       switch (incl_pedana) {
-        case PF0: 
-        case PFB:
-          nuovo_stato_prog = F_LV0_PW0;          
-          break;
+        case PP0: 
         case PF1:
-          if (stato_velo_corr != LV0)
-              nuovo_stato_prog = F_LV1_PW1;
+        case PB1:
+        case PB2:        
+          nuovo_stato_prog = ST_S0_F;          
           break;
         case PF2:
-          nuovo_stato_prog = F_LV0_PW2;                
+          if (stato_velo_corr)
+              nuovo_stato_prog = MV_S1_F;          
       }
       break;
-    //---------------------------------//      
-    case F_LV0_PW2:
+    //---------------------------------//
+    case MV_S0_F:
       switch (incl_pedana) {
-        case PF0: 
-        case PFB:
-          nuovo_stato_prog = F_LV0_PW0;          
-          break;
+        case PP0: 
         case PF1:
-          nuovo_stato_prog = F_LV0_PW1;          
+        case PB1:
+        case PB2:
+          if (!stato_velo_corr) 
+            nuovo_stato_prog = ST_S0_F;
           break;
         case PF2:
-          if (stato_velo_corr != LV0)
-            nuovo_stato_prog = F_LV1_PW2;
+          nuovo_stato_prog = MV_S1_F;                    
       }
       break;
     //---------------------------------//
-    case F_LV1_PW0:
+    case MV_S1_F:
       switch (incl_pedana) {
-        case PF0: 
-        case PFB:
-          if (stato_velo_corr == LV0) 
-            nuovo_stato_prog = F_LV0_PW0;
-          break;
+        case PP0: 
         case PF1:
-          nuovo_stato_prog = F_LV1_PW1;          
-          break;
-        case PF2:                
-          nuovo_stato_prog = F_LV1_PW2;                 
+        case PB1:
+        case PB2:
+          nuovo_stato_prog = MV_S0_F;                   
       }
       break;
     //---------------------------------//
-    case F_LV1_PW1:
-      switch (incl_pedana) {
-        case PF0: 
-        case PFB:
-          nuovo_stato_prog = F_LV1_PW0;          
-          break;
-        case PF1:
-          if (stato_velo_corr == LVX)
-            nuovo_stato_prog = F_LVX_PW1;
-          break;
-        case PF2:                
-          nuovo_stato_prog = F_LV1_PW2;          
-      }
-      break;
-    //---------------------------------//
-    case F_LV1_PW2:
-      switch (incl_pedana) {
-        case PF0:
-        case PF1: 
-        case PFB:
-          nuovo_stato_prog = F_LV1_PW1;          
-          break;
-        case PF2:                
-          if (stato_velo_corr > LV1)
-            nuovo_stato_prog = F_LV2_PW2;       
-      }
-      break;
-    //---------------------------------//
-    case F_LV2_PW0:
-      switch (incl_pedana) {
-        case PF0:
-        case PFB:
-          if (stato_velo_corr < LV2)
-            nuovo_stato_prog = F_LV1_PW0;         
-          break;
-        case PF1:
-          nuovo_stato_prog = F_LV2_PW1;
-          break;
-        case PF2:
-          nuovo_stato_prog = F_LV2_PW2;       
-      }
-      break;
-    //---------------------------------//
-    case F_LV2_PW1:
-      switch (incl_pedana) {
-        case PF0:
-        case PFB:
-          nuovo_stato_prog = F_LV2_PW0;
-          break;
-        case PF1:
-          if (stato_velo_corr < LV2)
-            nuovo_stato_prog = F_LV1_PW1;
-          break;
-        case PF2:
-          nuovo_stato_prog = F_LV2_PW2;
-      }
-      break;
-    //---------------------------------//
-    case F_LV2_PW2:
-      switch (incl_pedana) {
-        case PF0:
-        case PF1:
-        case PFB:
-          nuovo_stato_prog = F_LV2_PW1;
-          break;
-        case PF2:
-          if (stato_velo_corr == LVX)
-             nuovo_stato_prog = F_LVX_PW2;
-      }
-      break;
-    //---------------------------------//
-    case F_LVX_PW0:
-      switch (incl_pedana) {
-        case PF0:
-        case PF1:
-        case PFB:
-          if (stato_velo_corr != LVX) {
-            if (stato_velo_corr == LV2)
-              nuovo_stato_prog = F_LV2_PW0;
-            else
-              nuovo_stato_prog = F_LV1_PW0;
-          }
-          break;
-        case PF2:
-          if (stato_velo_corr != LVX)
-            nuovo_stato_prog = F_LV2_PW0; 
-      }
-      break;
-    //---------------------------------//
-    case F_LVX_PW1:
-      switch (incl_pedana) {
-        case PF0:
-        case PF1:
-        case PFB:
-          nuovo_stato_prog = F_LVX_PW0;
-          break;
-        case PF2:
-          if (stato_velo_corr < LV2) 
-            nuovo_stato_prog = F_LV1_PW1; 
-      }
-      break;
-    //---------------------------------//
-    case F_LVX_PW2:
-      switch (incl_pedana) {
-        case PF0:
-        case PFB:
-          nuovo_stato_prog = F_LVX_PW0;
-          break;
+    case ST_S0_B:
+      switch (incl_pedana) {        
         case PF1:
         case PF2:
-          nuovo_stato_prog = F_LVX_PW1;
-      }
-      break;
-    //---------------------------------//
-    case B_LV0_PW0:
-      switch (incl_pedana) {
-        case PF0:
-        case PF1:
-        case PF2:        
-          nuovo_stato_prog = F_LV0_PW0;
+          nuovo_stato_prog = ST_S0_F;
           inv_da_applicare_dx = true;
           inv_da_applicare_sx = true;
           nuova_inversione_sx = LOW;
           nuova_inversione_dx = LOW;
           break;
-        case PFB:
-          nuovo_stato_prog = B_LV0_PW1;
+        case PB2:
+          nuovo_stato_prog = ST_S1_B;
       }
       break; 
     //---------------------------------//
-    case B_LV0_PW1:
+    case ST_S1_B:
       switch (incl_pedana) {
-        case PF0:
+        case PP0:
         case PF1:
-        case PF2:        
-          nuovo_stato_prog = F_LV0_PW0;
-          inv_da_applicare_dx = true;
-          inv_da_applicare_sx = true;          
-          nuova_inversione_sx = LOW;
-          nuova_inversione_dx = LOW;
+        case PF2:
+        case PB1:        
+          nuovo_stato_prog = ST_S0_B;
           break;
-        case PFB:
-          if (stato_velo_corr > LV0)
-            nuovo_stato_prog = F_LV1_PW1;          
+        case PB2:
+          if (stato_velo_corr)
+            nuovo_stato_prog = MV_S1_B;          
       }
       break;
     //---------------------------------//
-    case B_LV1_PW0:
+    case MV_S0_B:
       switch (incl_pedana) {
-        case PF0:
+        case PP0:
         case PF1:
-        case PF2:        
-          if (stato_velo_corr == LV0)
-            nuovo_stato_prog = B_LV0_PW0;
-        case PFB:
-          nuovo_stato_prog = B_LV1_PW1;
+        case PF2:
+        case PB1:
+          if (!stato_velo_corr)
+            nuovo_stato_prog = ST_S0_B;
+          break;
+        case PB2:
+          nuovo_stato_prog = MV_S1_B;
       }
       break;
     //---------------------------------//
-    case B_LV1_PW1:
+    case MV_S1_B:
       switch (incl_pedana) {
-        case PF0:
+        case PP0:
         case PF1:
-        case PF2:        
-          nuovo_stato_prog = B_LV1_PW0;
-        case PFB:
-          if (stato_velo_corr > LV1)
-            nuovo_stato_prog = B_LVX_PW1;          
+        case PF2:
+        case PB1:               
+          nuovo_stato_prog = MV_S0_B;
       }
       break;
-    //---------------------------------//
-    case B_LVX_PW0: 
-      if (stato_velo_corr != LVX)
-        nuovo_stato_prog = B_LV1_PW0;
-
-      break;            
-    //---------------------------------//
-    case B_LVX_PW1:
-      switch (incl_pedana) {
-        case PF0:
-          if (stato_velo_corr != LVX)
-            nuovo_stato_prog = B_LV1_PW1;
-        case PF1:
-        case PF2:        
-        case PFB:
-          nuovo_stato_prog = B_LVX_PW0;
-      }
-      break;                             
   }
 
   /*
@@ -679,12 +534,27 @@ void applica_pwm(void)
 {  
   //TODO: applicare le variazioni derivanti dal nunchuck
   //TODO: applicare la calibrazione analogica di compensazione DX/SX
-  //Applicazione retroazione: t[i+1] = THROTTLE_GAIN * ERR(t[stato],t[i])
-  //l'indice del throttle target è dato dai 2 bit meno significativi dello stato     
-  pwm_throttle_istantaneo += (THROTTLE_GAIN * (pwm_throttle[stato_prog & 0b11] - pwm_throttle_istantaneo));  
+
+  //Questo è un sistema discreto lineare: dovrebbe essere progettato come PID
+  //Approccio di controllo del moto: PROPORZIONALE ALLA PENDENZA
+  if (throttles_max[stato_prog & 0b11]) { //Se diverso di zero
+    ampiezza_thr_dx = map(min(abs(media_x_acc), BX_MASSIMO), BX_MINIMO, BX_MASSIMO, 0, throttles_max[stato_prog & 0b11]);
+    ampiezza_thr_sx = map(min(abs(media_x_acc), BX_MASSIMO), BX_MINIMO, BX_MASSIMO, 0, throttles_max[stato_prog & 0b11]);
+    pwm_byte_dx = PWM_THROTTLE_MIN + ampiezza_thr_dx;
+    pwm_byte_sx = PWM_THROTTLE_MIN + ampiezza_thr_sx;
+  }
+  else {
+    pwm_byte_dx = 0;
+    pwm_byte_sx = 0;    
+  }
+
+#ifndef PRESENZA_SEMPRE
   if (presenza) {    
-    analogWrite(PWM_DX, byte(pwm_throttle_istantaneo));
-    analogWrite(PWM_SX, byte(pwm_throttle_istantaneo));
+#else
+  if (true) {
+#endif   
+    analogWrite(PWM_DX, pwm_byte_dx);
+    analogWrite(PWM_SX, pwm_byte_sx);
   }
   else {
     //Non aziona i motori se non è premuto il pulsante di presenza
@@ -703,23 +573,15 @@ void applica_pwm(void)
 void applica_inversione(void) 
 {
   if (inv_da_applicare_dx || inv_da_applicare_sx) {
+    Serial.println(F("CAMBIO DIREZIONE"));  
     if (inv_da_applicare_dx) analogWrite(PWM_DX, 0);
     if (inv_da_applicare_sx) analogWrite(PWM_SX, 0);
     delay(450);  
     if (inv_da_applicare_dx) digitalWrite(INVERS_DX, inversione_dx);
     if (inv_da_applicare_sx) digitalWrite(INVERS_SX, inversione_sx);
     inv_da_applicare_dx = false;
-    inv_da_applicare_sx = false;      
+    inv_da_applicare_sx = false;          
   }
-}
-
-/**
- * Applica i valori di frenata ai controllers
- */
-void applica_frenata(void)
-{
-    digitalWrite(FRENATA_DX, frenata);
-    digitalWrite(FRENATA_SX, frenata);    
 }
 
 /**
@@ -731,15 +593,21 @@ void report_status(void)
   cnt_comm--;
   if (cnt_comm == 0) {
     Serial.print(F("S;"));Serial.print(stato_prog, BIN);
-    Serial.print(F(";ZM;"));Serial.print(media_z_acc, DEC);     
+    //Serial.print(F(";ZM;"));Serial.print(media_z_acc, DEC);     
     Serial.print(F(";XM;"));Serial.print(media_x_acc, DEC);    
     Serial.print(F(";VD;"));Serial.print(media_velo_dx, DEC);
     Serial.print(F(";VS;"));Serial.print(media_velo_sx, DEC);
-    Serial.print(F(";TH;"));Serial.print(pwm_throttle_istantaneo, 1);    
-    Serial.print(F(";ID;"));Serial.print(inversione_dx, DEC);
-    Serial.print(F(";IS;"));Serial.print(inversione_sx, DEC);  
-    Serial.print(F(";B;"));Serial.print(livello_batt, DEC);
-    Serial.print(F(";C;"));Serial.print(t_acc, DEC);    
+    //Serial.print(F(";V;"));Serial.print(media_velo, DEC);
+    //Serial.print(F(";Ed;"));Serial.print(err_velo_dx, DEC);
+    //Serial.print(F(";Es;"));Serial.print(err_velo_sx, DEC); 
+    //Serial.print(F(";Dd;"));Serial.print(delta_velo_dx, DEC);
+    //Serial.print(F(";Ds;"));Serial.print(delta_velo_sx, DEC); 
+    Serial.print(F(";Td;"));Serial.print(pwm_byte_dx, DEC);
+    Serial.print(F(";Ts;"));Serial.print(pwm_byte_sx, DEC);    
+    Serial.print(F(";Id;"));Serial.print(inversione_dx, DEC);
+    Serial.print(F(";Is;"));Serial.print(inversione_sx, DEC);  
+    //Serial.print(F(";B;"));Serial.print(livello_batt, DEC);
+    //Serial.print(F(";C;"));Serial.print(t_acc, DEC);        
     Serial.println();
 
     cnt_comm = CICLI_COMM;

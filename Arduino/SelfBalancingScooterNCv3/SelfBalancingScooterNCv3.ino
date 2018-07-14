@@ -188,6 +188,8 @@ void setup() {
   pinMode(PWM_SX, OUTPUT);  
   pinMode(FRENATA_DX, OUTPUT);
   pinMode(FRENATA_SX, OUTPUT);
+  pinMode(INVERS_DX, OUTPUT);
+  pinMode(INVERS_SX, OUTPUT);
   pinMode(STATUS_LED, OUTPUT);
   pinMode(PRESENZA, INPUT_PULLUP);
   pinMode(FUNC1, OUTPUT);
@@ -204,6 +206,12 @@ void setup() {
     serie_velo_dx[i]=0;
     serie_velo_sx[i]=0;
   }
+
+  //Stati iniziali switch controllo
+  digitalWrite(FRENATA_DX, LOW);
+  digitalWrite(FRENATA_SX, LOW);
+  digitalWrite(INVERS_DX, LOW);
+  digitalWrite(INVERS_SX, LOW);  
 
   //Il controller deve essere tenuto con throttle a zero
   //se l'hoverboard era stato spento in modo brusco
