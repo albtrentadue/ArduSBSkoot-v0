@@ -12,7 +12,7 @@
  * By Alberto Trentadue 2017-2018
  */
 
-//#define HB_CAPOVOLTO
+#define HB_CAPOVOLTO
 #define PRESENZA_SEMPRE
 
 //Per I2C
@@ -71,12 +71,17 @@ byte stato_prog = ST_S0_F;
 //bx,min: Valore minimo (ridotto) di componente frontale bx per rilevare la pendenza della pedana
 //TODO: Verificare sperimentalmente
 #define BX_MINIMO 50
-//bx,max: Valore massimo (ridotto) di componente frontale bx 
-//TODO: Verificare sperimentalmente
-#define BX_MASSIMO 200
 //bx,inv: Valore minimo (ridotto) di componente frontale bx per decidere la direzione
 //TODO: Verificare sperimentalmente
 #define BX_DIREZIONE 20
+//bx,max: Valore massimo (ridotto) di componente frontale bx 
+//TODO: Verificare sperimentalmente
+#define BX_MASSIMO 200
+//Variabilità componente frontale bx
+#define SPAN_BX (BX_MASSIMO - BX_MINIMO)
+//Compensazione della pendenza di montaggio dell'accelerometro, per avere 0 secondo livella
+#define BX_COMP_MONTAGGIO 45
+
 
 //Costanti inclinazione pedana
 #define PP0 0
@@ -95,12 +100,12 @@ int livello_batt = 0;
 #define PWM_THROTTLE_MIN 120
 //Variazione ampiezza throttle in marcia avanti
 //TODO: da regolare
-#define THR_MAX_FWD 40
+#define SPAN_THR_FWD 40
 //Variazione ampiezza throttle in marcia indietro
 //TODO: da regolare
-#define THR_MAX_BWD 30
+#define SPAN_THR_BWD 30
 //Setpoint velocità, indicizzati
-int16_t throttles_max[] = {0, 0, THR_MAX_FWD, THR_MAX_BWD};
+int16_t throttles_max[] = {0, 0, SPAN_THR_FWD, SPAN_THR_BWD};
 
 //Valore minimo del sensore analogico di velocità che considera il mezzo fermo
 //TODO: da regolare
@@ -245,6 +250,8 @@ void leggi_accelerometro(void)
   //Riduzione di precisione
   z_acc /= PREC_REDUX_Z;
   x_acc /= PREC_REDUX_X;
+  //Compensazione montaggio scheda accelerometro
+  x_acc += BX_COMP_MONTAGGIO;
   
   //aggiorna i campioni delle accelerazioni
 #ifndef HB_CAPOVOLTO
@@ -332,8 +339,7 @@ void calcola_medie(void)
  */
 void abort_completo(void) {
     Serial.println(F("Abort completo"));
-    digitalWrite(FRENATA_DX, HIGH);
-    digitalWrite(FRENATA_SX, HIGH);
+    applica_frenata(HIGH);
     analogWrite(PWM_DX, 0);
     analogWrite(PWM_SX, 0);
     digitalWrite(LED_BUILTIN, HIGH);
@@ -536,12 +542,14 @@ void applica_pwm(void)
   //TODO: applicare la calibrazione analogica di compensazione DX/SX
 
   //Questo è un sistema discreto lineare: dovrebbe essere progettato come PID
-  //Approccio di controllo del moto: PROPORZIONALE ALLA PENDENZA
-  if (throttles_max[stato_prog & 0b11]) { //Se diverso di zero
-    ampiezza_thr_dx = map(min(abs(media_x_acc), BX_MASSIMO), BX_MINIMO, BX_MASSIMO, 0, throttles_max[stato_prog & 0b11]);
-    ampiezza_thr_sx = map(min(abs(media_x_acc), BX_MASSIMO), BX_MINIMO, BX_MASSIMO, 0, throttles_max[stato_prog & 0b11]);
+  //Approccio di controllo del moto: QUADRATICO RISPETTO ALLA PENDENZA
+  if (throttles_max[stato_prog & 0b11]) { //Se diverso di zero    
+    int16_t ax_lim = min(abs(media_x_acc), BX_MASSIMO);
+    float fatt_b = float(ax_lim - BX_MINIMO) / SPAN_BX;
+    ampiezza_thr_dx = byte(map(ax_lim, BX_MINIMO, BX_MASSIMO, 0, throttles_max[stato_prog & 0b11]) * fatt_b);
+    ampiezza_thr_sx = byte(map(ax_lim, BX_MINIMO, BX_MASSIMO, 0, throttles_max[stato_prog & 0b11]) * fatt_b);     
     pwm_byte_dx = PWM_THROTTLE_MIN + ampiezza_thr_dx;
-    pwm_byte_sx = PWM_THROTTLE_MIN + ampiezza_thr_sx;
+    pwm_byte_sx = PWM_THROTTLE_MIN + ampiezza_thr_sx;        
   }
   else {
     pwm_byte_dx = 0;
@@ -552,17 +560,24 @@ void applica_pwm(void)
   if (presenza) {    
 #else
   if (true) {
-#endif   
+#endif    
     analogWrite(PWM_DX, pwm_byte_dx);
     analogWrite(PWM_SX, pwm_byte_sx);
   }
   else {
     //Non aziona i motori se non è premuto il pulsante di presenza
     analogWrite(PWM_DX, 0);
-    analogWrite(PWM_SX, 0);
-    digitalWrite(FRENATA_DX, HIGH);
-    digitalWrite(FRENATA_SX, HIGH);        
+    analogWrite(PWM_SX, 0);    
   }
+}
+
+/**
+ * Applica i valori di frenata ai controllers
+ */
+void applica_frenata(byte frenata)
+{
+    digitalWrite(FRENATA_DX, frenata);
+    digitalWrite(FRENATA_SX, frenata);    
 }
 
 /**
@@ -592,22 +607,16 @@ void report_status(void)
 {
   cnt_comm--;
   if (cnt_comm == 0) {
-    Serial.print(F("S;"));Serial.print(stato_prog, BIN);
-    //Serial.print(F(";ZM;"));Serial.print(media_z_acc, DEC);     
+    Serial.print(F("S;"));Serial.print(stato_prog, BIN);    
     Serial.print(F(";XM;"));Serial.print(media_x_acc, DEC);    
     Serial.print(F(";VD;"));Serial.print(media_velo_dx, DEC);
     Serial.print(F(";VS;"));Serial.print(media_velo_sx, DEC);
-    //Serial.print(F(";V;"));Serial.print(media_velo, DEC);
-    //Serial.print(F(";Ed;"));Serial.print(err_velo_dx, DEC);
-    //Serial.print(F(";Es;"));Serial.print(err_velo_sx, DEC); 
-    //Serial.print(F(";Dd;"));Serial.print(delta_velo_dx, DEC);
-    //Serial.print(F(";Ds;"));Serial.print(delta_velo_sx, DEC); 
     Serial.print(F(";Td;"));Serial.print(pwm_byte_dx, DEC);
     Serial.print(F(";Ts;"));Serial.print(pwm_byte_sx, DEC);    
     Serial.print(F(";Id;"));Serial.print(inversione_dx, DEC);
     Serial.print(F(";Is;"));Serial.print(inversione_sx, DEC);  
-    //Serial.print(F(";B;"));Serial.print(livello_batt, DEC);
-    //Serial.print(F(";C;"));Serial.print(t_acc, DEC);        
+    Serial.print(F(";B;"));Serial.print(livello_batt, DEC);
+    Serial.print(F(";C;"));Serial.print(t_acc, DEC);        
     Serial.println();
 
     cnt_comm = CICLI_COMM;
