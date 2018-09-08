@@ -1,18 +1,17 @@
 /***
- * DIY Self Balancing Scooter ATR
- * Self balancing scooter controller sketch using one single rolling board
- * and one single accelerometer sensor.
- * It drives 2 brushless controllers for both speed and direction and is 
- * controlled by a Wii Nunchuck
- * 
- * Prima versione controllo:
- * - Velocità angolare proporzionale all'angolo di pendenza, limitata superiormente
- * - Diverse costanti per marcia avanti ed indietro
- * 
- * By Alberto Trentadue 2017-2018
- */
+   DIY Self Balancing Scooter ATR
+   Self balancing scooter controller sketch using one single rolling board
+   and one single accelerometer sensor.
+   It drives 2 brushless controllers for both speed and direction and is
+   controlled by a Wii Nunchuck
 
-#define HB_CAPOVOLTO
+   Prima versione controllo:
+   - Velocità angolare proporzionale all'angolo di pendenza, limitata superiormente
+   - Diverse costanti per marcia avanti ed indietro
+
+   By Alberto Trentadue 2017-2018
+*/
+
 #define PRESENZA_SEMPRE
 
 //Per I2C
@@ -39,9 +38,12 @@
 byte cnt_presenza = 0;
 bool presenza = false;
 
-//Non usato in v1.0
+//Non usati in v1.0
 #define FUNC1 9
 #define FUNC2 10
+
+#define JUMPER_CAPOVOLTO 11
+boolean hb_capovolto = false;
 
 //Indirizzi I2C
 #define ADDR_NUNCHUCK_W 0xA4
@@ -74,7 +76,7 @@ byte stato_prog = ST_S0_F;
 //bx,inv: Valore minimo (ridotto) di componente frontale bx per decidere la direzione
 //TODO: Verificare sperimentalmente
 #define BX_DIREZIONE 20
-//bx,max: Valore massimo (ridotto) di componente frontale bx 
+//bx,max: Valore massimo (ridotto) di componente frontale bx
 //TODO: Verificare sperimentalmente
 #define BX_MASSIMO 200
 //Variabilità componente frontale bx
@@ -97,7 +99,7 @@ byte stato_prog = ST_S0_F;
 int livello_batt = 0;
 
 //valore minimo del PWM che ferma il motore
-#define PWM_THROTTLE_MIN 120
+#define PWM_THROTTLE_MIN 117
 //Variazione ampiezza throttle in marcia avanti
 //TODO: da regolare
 #define SPAN_THR_FWD 40
@@ -143,7 +145,7 @@ byte heart = 0;
 byte cnt_comm = CICLI_COMM;
 
 //Variabili per le misure dell'accelerometro MPU-6050
-byte ultimo_campione=0;
+byte ultimo_campione = 0;
 int16_t z_acc; //Globale: usata nel MPU-6050
 int32_t somma_z_acc = 0;
 int16_t serie_z[CICLI_MEDIE];
@@ -184,50 +186,54 @@ void setup() {
 
   // Inizializzazione I/O
   pinMode(PWM_DX, OUTPUT);
-  pinMode(PWM_SX, OUTPUT);  
+  pinMode(PWM_SX, OUTPUT);
   pinMode(FRENATA_DX, OUTPUT);
   pinMode(FRENATA_SX, OUTPUT);
   pinMode(INVERS_DX, OUTPUT);
-  pinMode(INVERS_SX, OUTPUT);  
+  pinMode(INVERS_SX, OUTPUT);
   pinMode(STATUS_LED, OUTPUT);
   pinMode(PRESENZA, INPUT_PULLUP);
   pinMode(FUNC1, OUTPUT);
   pinMode(FUNC2, OUTPUT);
+  pinMode(JUMPER_CAPOVOLTO, INPUT_PULLUP);
 
   //Setup dell'accelerometro
   setup_mpu6050();
 
   //Azzera i campioni da mediare
   byte i;
-  for (i=0; i<CICLI_MEDIE; i++) {
-    serie_z[i]=0;
-    serie_x[i]=0;
-    serie_velo_dx[i]=0;
-    serie_velo_sx[i]=0;
+  for (i = 0; i < CICLI_MEDIE; i++) {
+    serie_z[i] = 0;
+    serie_x[i] = 0;
+    serie_velo_dx[i] = 0;
+    serie_velo_sx[i] = 0;
   }
 
   //Stati iniziali switch controllo
   digitalWrite(FRENATA_DX, LOW);
   digitalWrite(FRENATA_SX, LOW);
   digitalWrite(INVERS_DX, LOW);
-  digitalWrite(INVERS_SX, LOW);  
+  digitalWrite(INVERS_SX, LOW);
+
+  //Controlla il jumper di hoverboard capovolto a massa
+  hb_capovolto = (digitalRead(JUMPER_CAPOVOLTO) == LOW);
 
   //Il controller deve essere tenuto con throttle a zero
   //se l'hoverboard era stato spento in modo brusco
   analogWrite(PWM_DX, 0);
   analogWrite(PWM_SX, 0);
   delay(500);
-    
+
 }
 
 void loop() {
   // put your main code here, to run repeatedly:
   leggi_accelerometro();
-  leggi_analogici();  
+  leggi_analogici();
   leggi_nunchuck();
-  leggi_presenza(); 
+  leggi_presenza();
   calcola_medie();
-  ultimo_campione = (ultimo_campione + 1) % CICLI_MEDIE;   
+  ultimo_campione = (ultimo_campione + 1) % CICLI_MEDIE;
   transiz_stato();
   ctrl_limiti_max();
   applica_inversione();
@@ -239,11 +245,11 @@ void loop() {
 }
 
 /**
- * Legge i valori Z e X e la temperatura dall'accelerometro via I2C
- * I valori sono memorizzati in z_acc, x_acc e t_acc
- * Si considera un accelerometro del tipo MPU-6050
- */
-void leggi_accelerometro(void) 
+   Legge i valori Z e X e la temperatura dall'accelerometro via I2C
+   I valori sono memorizzati in z_acc, x_acc e t_acc
+   Si considera un accelerometro del tipo MPU-6050
+*/
+void leggi_accelerometro(void)
 {
   //Esegue la procedura di accesso all'MPU-6050
   leggi_mpu6050();
@@ -252,29 +258,30 @@ void leggi_accelerometro(void)
   x_acc /= PREC_REDUX_X;
   //Compensazione montaggio scheda accelerometro
   x_acc += BX_COMP_MONTAGGIO;
-  
+
   //aggiorna i campioni delle accelerazioni
-#ifndef HB_CAPOVOLTO
-  //z_acc e x_acc sono al negativo per come è stato montato l'MPU6050
-  somma_z_acc += (-z_acc - serie_z[ultimo_campione]);
-  somma_x_acc += (-x_acc - serie_x[ultimo_campione]);
-  serie_z[ultimo_campione] = -z_acc;
-  serie_x[ultimo_campione] = -x_acc;
-#else
-  somma_z_acc += (z_acc - serie_z[ultimo_campione]);
-  somma_x_acc += (x_acc - serie_x[ultimo_campione]);
-  serie_z[ultimo_campione] = z_acc;
-  serie_x[ultimo_campione] = x_acc;
-#endif
-      
+  if (hb_capovolto) {
+    //Inversione dei valori se l'hoverboard è capovolto (in test)
+    somma_z_acc += (z_acc - serie_z[ultimo_campione]);
+    somma_x_acc += (x_acc - serie_x[ultimo_campione]);
+    serie_z[ultimo_campione] = z_acc;
+    serie_x[ultimo_campione] = x_acc;
+  }
+  else {
+    //z_acc e x_acc sono al negativo per come è stato montato l'MPU6050
+    somma_z_acc += (-z_acc - serie_z[ultimo_campione]);
+    somma_x_acc += (-x_acc - serie_x[ultimo_campione]);
+    serie_z[ultimo_campione] = -z_acc;
+    serie_x[ultimo_campione] = -x_acc;
+  }
 }
 
 /**
- * Legge i valori analogici:
- * A0: stato batteria -> livello_batt
- * A1: velocità ruota DX -> velo_dx
- * A2: velocità ruota SX -> velo_sx
- */
+   Legge i valori analogici:
+   A0: stato batteria -> livello_batt
+   A1: velocità ruota DX -> velo_dx
+   A2: velocità ruota SX -> velo_sx
+*/
 void leggi_analogici(void)
 {
   livello_batt = analogRead(VALIM_ANALOG);
@@ -284,32 +291,32 @@ void leggi_analogici(void)
   somma_velo_dx += (velo_dx - serie_velo_dx[ultimo_campione]);
   serie_velo_dx[ultimo_campione] = velo_dx;
   //Scartare la prima lettura nel cambio canale A/D
-  analogRead(MISVEL_SX);  
-  int16_t velo_sx = analogRead(MISVEL_SX);  
+  analogRead(MISVEL_SX);
+  int16_t velo_sx = analogRead(MISVEL_SX);
   somma_velo_sx += (velo_sx - serie_velo_sx[ultimo_campione]);
   serie_velo_sx[ultimo_campione] = velo_sx;
 }
 
 /**
- * Legge lo stato del nunchuck
- */
+   Legge lo stato del nunchuck
+*/
 void leggi_nunchuck(void)
 {
   //TODO
 }
 
 /**
- * Verifica lo stato del pulsante di presenza
- * Lo stato di presenza deve essere confermato per un numero di cicli = CONFERME_PRESENZA
- * per indicare la presenza effettiva sulla pedana (debounce).
- */
-void leggi_presenza(void) 
+   Verifica lo stato del pulsante di presenza
+   Lo stato di presenza deve essere confermato per un numero di cicli = CONFERME_PRESENZA
+   per indicare la presenza effettiva sulla pedana (debounce).
+*/
+void leggi_presenza(void)
 {
   byte puls = digitalRead(PRESENZA);
   if (puls == HIGH) {
     if (cnt_presenza > 0) --cnt_presenza;
     else //cnt_presenza è 0
-      presenza = false;      
+      presenza = false;
   }
   else {
     if (cnt_presenza < CONFERME_PRESENZA) ++cnt_presenza;
@@ -320,8 +327,8 @@ void leggi_presenza(void)
 
 
 /**
- * Esegue le medie delle misure che devono essere mediate
- */
+   Esegue le medie delle misure che devono essere mediate
+*/
 void calcola_medie(void)
 {
   media_z_acc = somma_z_acc / CICLI_MEDIE;
@@ -333,75 +340,75 @@ void calcola_medie(void)
 }
 
 /**
- * Ferma e frena le ruote e blocca l'esecuzione del programma
- * definitivamente. 
- * Da usare solo in caso di intervento urgente.
- */
+   Ferma e frena le ruote e blocca l'esecuzione del programma
+   definitivamente.
+   Da usare solo in caso di intervento urgente.
+*/
 void abort_completo(void) {
-    Serial.println(F("Abort completo"));
-    applica_frenata(HIGH);
-    analogWrite(PWM_DX, 0);
-    analogWrite(PWM_SX, 0);
-    digitalWrite(LED_BUILTIN, HIGH);
-    //Blocco del programma. Reset necessario.
-    HALT_PROGRAM;
+  Serial.println(F("Abort completo"));
+  applica_frenata(HIGH);
+  analogWrite(PWM_DX, 0);
+  analogWrite(PWM_SX, 0);
+  digitalWrite(LED_BUILTIN, HIGH);
+  //Blocco del programma. Reset necessario.
+  HALT_PROGRAM;
 }
 
 /**
- * Esegue controlli di valori assoluti che richiedono 
- * intervento immediato al di fuori della transizione di stato:
- * 1. velocità eccessiva dovuto al ribaltamento dell'hoverboard
- */
+   Esegue controlli di valori assoluti che richiedono
+   intervento immediato al di fuori della transizione di stato:
+   1. velocità eccessiva dovuto al ribaltamento dell'hoverboard
+*/
 void ctrl_limiti_max() {
   if ( media_velo_dx >= VEL_ABS_MAX || media_velo_sx >= VEL_ABS_MAX )
-    abort_completo();    
+    abort_completo();
 }
 
 /**
- * Ritorna lo stato di inclinazione della pedana in base
- * agli angoli misurati.
- * Valori possibili:
- * PF0: orizzontale
- * PF1: Inclinata in avanti
- * PFB: Inclinata all'indietro
- */
-byte stato_inclinazione(void) {  
+   Ritorna lo stato di inclinazione della pedana in base
+   agli angoli misurati.
+   Valori possibili:
+   PF0: orizzontale
+   PF1: Inclinata in avanti
+   PFB: Inclinata all'indietro
+*/
+byte stato_inclinazione(void) {
   if (media_x_acc <= -BX_MINIMO) return PB2;
   if (media_x_acc >= BX_MINIMO) return PF2;
   if (media_x_acc <= -BX_DIREZIONE) return PB1;
   if (media_x_acc >= BX_DIREZIONE) return PF1;
-  
+
   return PP0;
 }
 
 /**
- * Ritorna lo stato di velocità media tra le due ruote
- * true: c'è movimento
- * 
- * TODO: con l'introduzione del controllo direzione, deve essere rivisto!
- */
+   Ritorna lo stato di velocità media tra le due ruote
+   true: c'è movimento
+
+   TODO: con l'introduzione del controllo direzione, deve essere rivisto!
+*/
 boolean stato_velo_ruote(void) {
   return ((media_velo_dx > VEL_FERMO) || (media_velo_sx > VEL_FERMO));
 }
 
 /**
- * Gestisce lo stato di funzionamento del programma e le sue transizioni.
- * Eseguito ogni CICLI_MEDIE iterazioni
- */
-void transiz_stato(void) 
-{ 
-  byte incl_pedana = stato_inclinazione();  
+   Gestisce lo stato di funzionamento del programma e le sue transizioni.
+   Eseguito ogni CICLI_MEDIE iterazioni
+*/
+void transiz_stato(void)
+{
+  byte incl_pedana = stato_inclinazione();
   bool stato_velo_corr = stato_velo_ruote();
   byte nuovo_stato_prog = stato_prog;
   byte nuova_inversione_sx = inversione_sx;
   byte nuova_inversione_dx = inversione_dx;
-     
+
   //Seleziona in base allo stato del programma
-  switch(stato_prog) {
+  switch (stato_prog) {
     case ST_S0_F:
       switch (incl_pedana) {
-        case PF2: 
-          nuovo_stato_prog = ST_S1_F;          
+        case PF2:
+          nuovo_stato_prog = ST_S1_F;
           break;
         case PB1:
         case PB2:
@@ -415,44 +422,44 @@ void transiz_stato(void)
     //---------------------------------//
     case ST_S1_F:
       switch (incl_pedana) {
-        case PP0: 
+        case PP0:
         case PF1:
         case PB1:
-        case PB2:        
-          nuovo_stato_prog = ST_S0_F;          
+        case PB2:
+          nuovo_stato_prog = ST_S0_F;
           break;
         case PF2:
           if (stato_velo_corr)
-              nuovo_stato_prog = MV_S1_F;          
+            nuovo_stato_prog = MV_S1_F;
       }
       break;
     //---------------------------------//
     case MV_S0_F:
       switch (incl_pedana) {
-        case PP0: 
+        case PP0:
         case PF1:
         case PB1:
         case PB2:
-          if (!stato_velo_corr) 
+          if (!stato_velo_corr)
             nuovo_stato_prog = ST_S0_F;
           break;
         case PF2:
-          nuovo_stato_prog = MV_S1_F;                    
+          nuovo_stato_prog = MV_S1_F;
       }
       break;
     //---------------------------------//
     case MV_S1_F:
       switch (incl_pedana) {
-        case PP0: 
+        case PP0:
         case PF1:
         case PB1:
         case PB2:
-          nuovo_stato_prog = MV_S0_F;                   
+          nuovo_stato_prog = MV_S0_F;
       }
       break;
     //---------------------------------//
     case ST_S0_B:
-      switch (incl_pedana) {        
+      switch (incl_pedana) {
         case PF1:
         case PF2:
           nuovo_stato_prog = ST_S0_F;
@@ -464,19 +471,19 @@ void transiz_stato(void)
         case PB2:
           nuovo_stato_prog = ST_S1_B;
       }
-      break; 
+      break;
     //---------------------------------//
     case ST_S1_B:
       switch (incl_pedana) {
         case PP0:
         case PF1:
         case PF2:
-        case PB1:        
+        case PB1:
           nuovo_stato_prog = ST_S0_B;
           break;
         case PB2:
           if (stato_velo_corr)
-            nuovo_stato_prog = MV_S1_B;          
+            nuovo_stato_prog = MV_S1_B;
       }
       break;
     //---------------------------------//
@@ -499,20 +506,20 @@ void transiz_stato(void)
         case PP0:
         case PF1:
         case PF2:
-        case PB1:               
+        case PB1:
           nuovo_stato_prog = MV_S0_B;
       }
       break;
   }
 
   /*
-   SENZA INERZIA
-  stato_prog = nuovo_stato_prog;
-  inversione_sx = nuova_inversione_sx;
-  inversione_dx = nuova_inversione_dx;
-  cnt_inerzia_stato = 0;
+    SENZA INERZIA
+    stato_prog = nuovo_stato_prog;
+    inversione_sx = nuova_inversione_sx;
+    inversione_dx = nuova_inversione_dx;
+    cnt_inerzia_stato = 0;
   */
-  
+
   //INERZIA CAMBIO STATO
   if (nuovo_stato_prog != stato_prog) {
     //Se c'è possibilità di cambio, si controlla l'inerzia
@@ -533,90 +540,90 @@ void transiz_stato(void)
 }
 
 /**
- * Calcola ed applica i valori dei PWM di thorttle delle ruote
- * Il valore dipende da pwm_throttle e dalla lettura del nunchuck
- */
+   Calcola ed applica i valori dei PWM di thorttle delle ruote
+   Il valore dipende da pwm_throttle e dalla lettura del nunchuck
+*/
 void applica_pwm(void)
-{  
+{
   //TODO: applicare le variazioni derivanti dal nunchuck
   //TODO: applicare la calibrazione analogica di compensazione DX/SX
 
   //Questo è un sistema discreto lineare: dovrebbe essere progettato come PID
   //Approccio di controllo del moto: QUADRATICO RISPETTO ALLA PENDENZA
-  if (throttles_max[stato_prog & 0b11]) { //Se diverso di zero    
+  if (throttles_max[stato_prog & 0b11]) { //Se diverso di zero
     int16_t ax_lim = min(abs(media_x_acc), BX_MASSIMO);
     float fatt_b = float(ax_lim - BX_MINIMO) / SPAN_BX;
     ampiezza_thr_dx = byte(map(ax_lim, BX_MINIMO, BX_MASSIMO, 0, throttles_max[stato_prog & 0b11]) * fatt_b);
-    ampiezza_thr_sx = byte(map(ax_lim, BX_MINIMO, BX_MASSIMO, 0, throttles_max[stato_prog & 0b11]) * fatt_b);     
+    ampiezza_thr_sx = byte(map(ax_lim, BX_MINIMO, BX_MASSIMO, 0, throttles_max[stato_prog & 0b11]) * fatt_b);
     pwm_byte_dx = PWM_THROTTLE_MIN + ampiezza_thr_dx;
-    pwm_byte_sx = PWM_THROTTLE_MIN + ampiezza_thr_sx;        
+    pwm_byte_sx = PWM_THROTTLE_MIN + ampiezza_thr_sx;
   }
   else {
     pwm_byte_dx = 0;
-    pwm_byte_sx = 0;    
+    pwm_byte_sx = 0;
   }
 
 #ifndef PRESENZA_SEMPRE
-  if (presenza) {    
+  if (presenza) {
 #else
   if (true) {
-#endif    
+#endif
     analogWrite(PWM_DX, pwm_byte_dx);
     analogWrite(PWM_SX, pwm_byte_sx);
   }
   else {
     //Non aziona i motori se non è premuto il pulsante di presenza
     analogWrite(PWM_DX, 0);
-    analogWrite(PWM_SX, 0);    
+    analogWrite(PWM_SX, 0);
   }
 }
 
 /**
- * Applica i valori di frenata ai controllers
- */
+   Applica i valori di frenata ai controllers
+*/
 void applica_frenata(byte frenata)
 {
-    digitalWrite(FRENATA_DX, frenata);
-    digitalWrite(FRENATA_SX, frenata);    
+  digitalWrite(FRENATA_DX, frenata);
+  digitalWrite(FRENATA_SX, frenata);
 }
 
 /**
- * Applica la procedura di inversione di marcia ai controllers:
- * - Stop per un certo tempo
- * - Applicazione del livello logico
- */
-void applica_inversione(void) 
+   Applica la procedura di inversione di marcia ai controllers:
+   - Stop per un certo tempo
+   - Applicazione del livello logico
+*/
+void applica_inversione(void)
 {
   if (inv_da_applicare_dx || inv_da_applicare_sx) {
-    Serial.println(F("CAMBIO DIREZIONE"));  
+    Serial.println(F("CAMBIO DIREZIONE"));
     if (inv_da_applicare_dx) analogWrite(PWM_DX, 0);
     if (inv_da_applicare_sx) analogWrite(PWM_SX, 0);
-    delay(450);  
+    delay(450);
     if (inv_da_applicare_dx) digitalWrite(INVERS_DX, inversione_dx);
     if (inv_da_applicare_sx) digitalWrite(INVERS_SX, inversione_sx);
     inv_da_applicare_dx = false;
-    inv_da_applicare_sx = false;          
+    inv_da_applicare_sx = false;
   }
 }
 
 /**
- * Scrive lo stato del programma sulla seriale
- * Eseguito ogni CICLI_REPORT iterazioni
- */
+   Scrive lo stato del programma sulla seriale
+   Eseguito ogni CICLI_REPORT iterazioni
+*/
 void report_status(void)
 {
   cnt_comm--;
   if (cnt_comm == 0) {
-    Serial.print(F("S;"));Serial.print(stato_prog, BIN);    
-    Serial.print(F(";XM;"));Serial.print(media_x_acc, DEC);    
-    Serial.print(F(";VD;"));Serial.print(media_velo_dx, DEC);
-    Serial.print(F(";VS;"));Serial.print(media_velo_sx, DEC);
-    Serial.print(F(";Td;"));Serial.print(pwm_byte_dx, DEC);
-    Serial.print(F(";Ts;"));Serial.print(pwm_byte_sx, DEC);    
-    Serial.print(F(";Id;"));Serial.print(inversione_dx, DEC);
-    Serial.print(F(";Is;"));Serial.print(inversione_sx, DEC);  
-    Serial.print(F(";B;"));Serial.print(livello_batt, DEC);
-    Serial.print(F(";C;"));Serial.print(t_acc, DEC);        
+    Serial.print(F("S;")); Serial.print(stato_prog, BIN);
+    Serial.print(F(";XM;")); Serial.print(media_x_acc, DEC);
+    Serial.print(F(";VD;")); Serial.print(media_velo_dx, DEC);
+    Serial.print(F(";VS;")); Serial.print(media_velo_sx, DEC);
+    Serial.print(F(";Td;")); Serial.print(pwm_byte_dx, DEC);
+    Serial.print(F(";Ts;")); Serial.print(pwm_byte_sx, DEC);
+    Serial.print(F(";Id;")); Serial.print(inversione_dx, DEC);
+    Serial.print(F(";Is;")); Serial.print(inversione_sx, DEC);
+    Serial.print(F(";B;")); Serial.print(livello_batt, DEC);
+    Serial.print(F(";C;")); Serial.print(t_acc, DEC);
     Serial.println();
 
     cnt_comm = CICLI_COMM;
@@ -624,14 +631,14 @@ void report_status(void)
 }
 
 /**
- Heartbeat on the built_in Led + EXT_LED
- */
-void heartbeat() 
+  Heartbeat on the built_in Led + EXT_LED
+*/
+void heartbeat()
 {
   cnt_heart--;
   if (cnt_heart == 0) {
     heart++;
-    digitalWrite(LED_BUILTIN, bitRead(heart,0));
+    digitalWrite(LED_BUILTIN, bitRead(heart, 0));
     cnt_heart = CICLI_HEART;
   }
 }
