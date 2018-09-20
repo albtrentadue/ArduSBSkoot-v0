@@ -31,12 +31,15 @@
 #define FRENATA_SX 5
 #define INVERS_SX 7
 #define MISVEL_SX A1
-//Pulsante di presenza.
+
+//Gestione rivelatori di presenza
+//Pin connesso ai rivelatori
 #define PRESENZA 8
 //Numero di test per convalidare la presenza
 #define CONFERME_PRESENZA 10
 byte cnt_presenza = 0;
 bool presenza = false;
+bool abilita_dopo_assenza = false;
 
 //Non usati in v1.0
 #define FUNC1 9
@@ -306,22 +309,24 @@ void leggi_nunchuck(void)
 }
 
 /**
-   Verifica lo stato del pulsante di presenza
+   Verifica lo stato del pulsante di presenza.
+   I pulsanti di presenza sono in parallelo, normalmente chiusi.
    Lo stato di presenza deve essere confermato per un numero di cicli = CONFERME_PRESENZA
    per indicare la presenza effettiva sulla pedana (debounce).
 */
 void leggi_presenza(void)
 {
   byte puls = digitalRead(PRESENZA);
-  if (puls == HIGH) {
+  if (puls == HIGH) { //Entrambi pulsanti schiacciati (aperti)
     if (cnt_presenza > 0) --cnt_presenza;
     else //cnt_presenza è 0
-      presenza = false;
+      presenza = true;
   }
-  else {
+  else { //Almeno un pulsante sollevato (chiuso)
     if (cnt_presenza < CONFERME_PRESENZA) ++cnt_presenza;
     else //cnt_presenza è CONFERME_PRESENZA
-      presenza = true;
+      presenza = false;
+      abilita_dopo_assenza = false;
   }
 }
 
@@ -368,9 +373,11 @@ void ctrl_limiti_max() {
    Ritorna lo stato di inclinazione della pedana in base
    agli angoli misurati.
    Valori possibili:
-   PF0: orizzontale
-   PF1: Inclinata in avanti
-   PFB: Inclinata all'indietro
+   PP0: orizzontale
+   PF1: Inclinata lievemente in avanti
+   PB1: Inclinata lievemente all'indietro
+   PF2: Inclinata in avanti
+   PB2: Inclinata all'indietro   
 */
 byte stato_inclinazione(void) {
   if (media_x_acc <= -BX_MINIMO) return PB2;
@@ -406,6 +413,9 @@ void transiz_stato(void)
   //Seleziona in base allo stato del programma
   switch (stato_prog) {
     case ST_S0_F:
+      //Gestione dello sblocco dopo mancata presenza
+      if (presenza) abilita_dopo_assenza = true;
+      
       switch (incl_pedana) {
         case PF2:
           nuovo_stato_prog = ST_S1_F;
@@ -459,6 +469,9 @@ void transiz_stato(void)
       break;
     //---------------------------------//
     case ST_S0_B:
+      //Gestione dello sblocco dopo mancata presenza
+      if (presenza) abilita_dopo_assenza = true;
+          
       switch (incl_pedana) {
         case PF1:
         case PF2:
@@ -511,7 +524,7 @@ void transiz_stato(void)
       }
       break;
   }
-
+  
   /*
     SENZA INERZIA
     stato_prog = nuovo_stato_prog;
@@ -548,7 +561,6 @@ void applica_pwm(void)
   //TODO: applicare le variazioni derivanti dal nunchuck
   //TODO: applicare la calibrazione analogica di compensazione DX/SX
 
-  //Questo è un sistema discreto lineare: dovrebbe essere progettato come PID
   //Approccio di controllo del moto: QUADRATICO RISPETTO ALLA PENDENZA
   if (throttles_max[stato_prog & 0b11]) { //Se diverso di zero
     int16_t ax_lim = min(abs(media_x_acc), BX_MASSIMO);
@@ -564,7 +576,10 @@ void applica_pwm(void)
   }
 
 #ifndef PRESENZA_SEMPRE
-  if (presenza) {
+  //Non aziona i motori se: 
+  //1. I pulsanti di presenza non sono entrambi schiacciati
+  //2. La pedana non si trova in posizione piana
+  if (presenza && abilita_dopo_assenza) {
 #else
   if (true) {
 #endif
@@ -572,7 +587,6 @@ void applica_pwm(void)
     analogWrite(PWM_SX, pwm_byte_sx);
   }
   else {
-    //Non aziona i motori se non è premuto il pulsante di presenza
     analogWrite(PWM_DX, 0);
     analogWrite(PWM_SX, 0);
   }
