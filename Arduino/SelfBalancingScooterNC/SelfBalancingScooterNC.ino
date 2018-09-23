@@ -12,7 +12,7 @@
    By Alberto Trentadue 2017-2018
 */
 
-#define PRESENZA_SEMPRE
+//#define PRESENZA_SEMPRE
 
 //Per I2C
 #include <Wire.h>
@@ -73,10 +73,10 @@ byte stato_prog = ST_S0_F;
 //Coefficienti di riduzione di precisione per divisione
 #define PREC_REDUX_X 16
 #define PREC_REDUX_Z 8
-//bx,min: Valore minimo (ridotto) di componente frontale bx per rilevare la pendenza della pedana
+//bx,min: Valore minimo (ridotto) di componente frontale bx per attivare il moto
 //TODO: Verificare sperimentalmente
 #define BX_MINIMO 50
-//bx,inv: Valore minimo (ridotto) di componente frontale bx per decidere la direzione
+//bx,dir: Valore minimo (ridotto) di componente frontale bx per decidere la direzione
 //TODO: Verificare sperimentalmente
 #define BX_DIREZIONE 20
 //bx,max: Valore massimo (ridotto) di componente frontale bx
@@ -85,67 +85,10 @@ byte stato_prog = ST_S0_F;
 //Variabilità componente frontale bx
 #define SPAN_BX (BX_MASSIMO - BX_MINIMO)
 //Compensazione della pendenza di montaggio dell'accelerometro, per avere 0 secondo livella
-#define BX_COMP_MONTAGGIO 45
-
-
-//Costanti inclinazione pedana
-#define PP0 0
-#define PF1 1
-#define PF2 2
-#define PB1 3
-#define PB2 4
-
-// Livelli analogici del partitore batteria
-// TODO: Calibrare rispetto al valore massimo della batteria
-#define BATT_OK 1000
-#define BATT_MIN 800
-int livello_batt = 0;
-
-//valore minimo del PWM che ferma il motore
-#define PWM_THROTTLE_MIN 117
-//Variazione ampiezza throttle in marcia avanti
-//TODO: da regolare
-#define SPAN_THR_FWD 40
-//Variazione ampiezza throttle in marcia indietro
-//TODO: da regolare
-#define SPAN_THR_BWD 30
-//Setpoint velocità, indicizzati
-int16_t throttles_max[] = {0, 0, SPAN_THR_FWD, SPAN_THR_BWD};
-
-//Valore minimo del sensore analogico di velocità che considera il mezzo fermo
-//TODO: da regolare
-#define VEL_FERMO 10
-//Valore massimo assoluto del livello analogico della velocità
-#define VEL_ABS_MAX 500
-
-//Livello di throttle da applicare per il PWM
-byte ampiezza_thr_dx = 0;
-byte ampiezza_thr_sx = 0;
-//Valore effettivamente applicato al PWM
-byte pwm_byte_dx = PWM_THROTTLE_MIN;
-byte pwm_byte_sx = PWM_THROTTLE_MIN;
-
-//Stati comando di inversione marcia. Attivo ALTO, pilota un NPN in saturazione
-byte inversione_dx = LOW;
-byte inversione_sx = LOW;
-//Flag di attivazione della procedura di inversione
-boolean inv_da_applicare_dx = false;
-boolean inv_da_applicare_sx = false;
-//Cicli di inerzia per cambio di stato
-#define INERZIA_STATO 3
-//Contatore di inerzia per i cambi di stato
-byte cnt_inerzia_stato = 0;
-
-//Durata di un ciclo loop in msec
-#define RITARDO_MAIN 2
+#define BX_COMP_MONTAGGIO -45
 
 #define CICLI_MEDIE 50 // Campioni considerati per le medie
 byte cnt_calc = CICLI_MEDIE;
-#define CICLI_HEART 100 // cicli da attendere per l'heartbeat
-byte cnt_heart = CICLI_HEART;
-byte heart = 0;
-#define CICLI_COMM 50 // cicli da attendere per comunicare i dati
-byte cnt_comm = CICLI_COMM;
 
 //Variabili per le misure dell'accelerometro MPU-6050
 byte ultimo_campione = 0;
@@ -158,6 +101,56 @@ int32_t somma_x_acc = 0;
 int16_t serie_x[CICLI_MEDIE];
 int16_t media_x_acc;
 int16_t t_acc; //Globale: usata nel MPU-6050
+
+//Costanti stato inclinazione pedana
+#define PP0 0
+#define PF1 1
+#define PF2 2
+#define PB1 3
+#define PB2 4
+
+//Cicli di inerzia per cambio di stato
+#define INERZIA_STATO 3
+//Contatore di inerzia per i cambi di stato
+byte cnt_inerzia_stato = 0;
+
+//valore minimo del PWM che ferma il motore
+#define PWM_THROTTLE_MIN 115
+//Variazione ampiezza throttle in marcia avanti
+//TODO: da regolare
+#define SPAN_THR_FWD 30
+//Variazione ampiezza throttle in marcia indietro
+//TODO: da regolare
+#define SPAN_THR_BWD 25
+//Setpoint velocità, indicizzati
+int16_t throttles_max[] = {0, 0, SPAN_THR_FWD, SPAN_THR_BWD};
+
+//Livello di throttle da applicare per il PWM
+float ampiezza_thr_dx = 0.0;
+float ampiezza_thr_sx = 0.0;
+float ultima_mxamp_thr = 0.0;
+//Valore effettivamente applicato al PWM
+byte pwm_byte_dx = PWM_THROTTLE_MIN;
+byte pwm_byte_sx = PWM_THROTTLE_MIN;
+
+// Livelli analogici del partitore batteria
+// TODO: Calibrare rispetto al valore massimo della batteria
+#define BATT_OK 1000
+#define BATT_MIN 800
+int livello_batt = 0;
+
+//Stati comando di inversione marcia. Attivo ALTO, pilota un NPN in saturazione
+byte inversione_dx = LOW;
+byte inversione_sx = LOW;
+//Flag di attivazione della procedura di inversione
+boolean inv_da_applicare_dx = false;
+boolean inv_da_applicare_sx = false;
+
+//Valore minimo del sensore analogico di velocità che considera il mezzo fermo
+//TODO: da regolare
+#define VEL_FERMO 10
+//Valore massimo assoluto del livello analogico della velocità
+#define VEL_ABS_MAX 800
 
 //Variabili per le misure della velocità delle ruote
 int32_t somma_velo_dx = 0;
@@ -177,6 +170,15 @@ int16_t err_velo_sx = 0;
 //Variabile di controllo: differenziale di velocità
 int16_t delta_velo_dx = 0;
 int16_t delta_velo_sx = 0;
+
+#define CICLI_HEART 100 // cicli da attendere per l'heartbeat
+byte cnt_heart = CICLI_HEART;
+byte heart = 0;
+#define CICLI_COMM 50 // cicli da attendere per comunicare i dati
+byte cnt_comm = CICLI_COMM;
+
+//Durata di un ciclo loop in msec
+#define RITARDO_MAIN 2
 
 //------ FUNZIONI -------
 
@@ -244,7 +246,7 @@ void loop() {
   report_status();
   //leggi_comando();
   heartbeat();
-  delay(RITARDO_MAIN);
+  //delay(RITARDO_MAIN);
 }
 
 /**
@@ -259,7 +261,7 @@ void leggi_accelerometro(void)
   //Riduzione di precisione
   z_acc /= PREC_REDUX_Z;
   x_acc /= PREC_REDUX_X;
-  //Compensazione montaggio scheda accelerometro
+  //Compensazione angolo di montaggio X scheda accelerometro
   x_acc += BX_COMP_MONTAGGIO;
 
   //aggiorna i campioni delle accelerazioni
@@ -326,7 +328,7 @@ void leggi_presenza(void)
     if (cnt_presenza < CONFERME_PRESENZA) ++cnt_presenza;
     else //cnt_presenza è CONFERME_PRESENZA
       presenza = false;
-      abilita_dopo_assenza = false;
+    abilita_dopo_assenza = false;
   }
 }
 
@@ -377,7 +379,7 @@ void ctrl_limiti_max() {
    PF1: Inclinata lievemente in avanti
    PB1: Inclinata lievemente all'indietro
    PF2: Inclinata in avanti
-   PB2: Inclinata all'indietro   
+   PB2: Inclinata all'indietro
 */
 byte stato_inclinazione(void) {
   if (media_x_acc <= -BX_MINIMO) return PB2;
@@ -415,7 +417,7 @@ void transiz_stato(void)
     case ST_S0_F:
       //Gestione dello sblocco dopo mancata presenza
       if (presenza) abilita_dopo_assenza = true;
-      
+
       switch (incl_pedana) {
         case PF2:
           nuovo_stato_prog = ST_S1_F;
@@ -471,7 +473,7 @@ void transiz_stato(void)
     case ST_S0_B:
       //Gestione dello sblocco dopo mancata presenza
       if (presenza) abilita_dopo_assenza = true;
-          
+
       switch (incl_pedana) {
         case PF1:
         case PF2:
@@ -524,7 +526,7 @@ void transiz_stato(void)
       }
       break;
   }
-  
+
   /*
     SENZA INERZIA
     stato_prog = nuovo_stato_prog;
@@ -562,21 +564,38 @@ void applica_pwm(void)
   //TODO: applicare la calibrazione analogica di compensazione DX/SX
 
   //Approccio di controllo del moto: QUADRATICO RISPETTO ALLA PENDENZA
-  if (throttles_max[stato_prog & 0b11]) { //Se diverso di zero
+  byte idx = stato_prog & 0b11;
+  /*
+    if (throttles_max[idx]) { //Se diverso di zero
     int16_t ax_lim = min(abs(media_x_acc), BX_MASSIMO);
     float fatt_b = float(ax_lim - BX_MINIMO) / SPAN_BX;
-    ampiezza_thr_dx = byte(map(ax_lim, BX_MINIMO, BX_MASSIMO, 0, throttles_max[stato_prog & 0b11]) * fatt_b);
-    ampiezza_thr_sx = byte(map(ax_lim, BX_MINIMO, BX_MASSIMO, 0, throttles_max[stato_prog & 0b11]) * fatt_b);
+    ampiezza_thr_dx = byte(map(ax_lim, BX_MINIMO, BX_MASSIMO, 0, throttles_max[idx]) * fatt_b);
+    ampiezza_thr_sx = byte(map(ax_lim, BX_MINIMO, BX_MASSIMO, 0, throttles_max[idx]) * fatt_b);
     pwm_byte_dx = PWM_THROTTLE_MIN + ampiezza_thr_dx;
     pwm_byte_sx = PWM_THROTTLE_MIN + ampiezza_thr_sx;
-  }
-  else {
+    }
+    else {
+    //reset del grado di throttle
+    ampiezza_thr_dx = 0;
+    ampiezza_thr_sx = 0;
     pwm_byte_dx = 0;
     pwm_byte_sx = 0;
+    }
+  */
+  if (throttles_max[idx] != 0) {
+    ampiezza_thr_dx = constrain(ampiezza_thr_dx+0.1, 0, throttles_max[idx]);
+    ampiezza_thr_sx = constrain(ampiezza_thr_sx+0.1, 0, throttles_max[idx]);
+    ultima_mxamp_thr = throttles_max[idx];
   }
+  else {
+    ampiezza_thr_dx = constrain(ampiezza_thr_dx-0.075, -15, ultima_mxamp_thr);
+    ampiezza_thr_sx = constrain(ampiezza_thr_sx-0.075, -15, ultima_mxamp_thr);
+  }
+  pwm_byte_dx = byte(PWM_THROTTLE_MIN + ampiezza_thr_dx);
+  pwm_byte_sx = byte(PWM_THROTTLE_MIN + ampiezza_thr_sx);
 
 #ifndef PRESENZA_SEMPRE
-  //Non aziona i motori se: 
+  //Non aziona i motori se:
   //1. I pulsanti di presenza non sono entrambi schiacciati
   //2. La pedana non si trova in posizione piana
   if (presenza && abilita_dopo_assenza) {
@@ -612,9 +631,10 @@ void applica_inversione(void)
     Serial.println(F("CAMBIO DIREZIONE"));
     if (inv_da_applicare_dx) analogWrite(PWM_DX, 0);
     if (inv_da_applicare_sx) analogWrite(PWM_SX, 0);
-    delay(450);
+    delay(100);
     if (inv_da_applicare_dx) digitalWrite(INVERS_DX, inversione_dx);
     if (inv_da_applicare_sx) digitalWrite(INVERS_SX, inversione_sx);
+    delay(100);
     inv_da_applicare_dx = false;
     inv_da_applicare_sx = false;
   }
@@ -630,14 +650,14 @@ void report_status(void)
   if (cnt_comm == 0) {
     Serial.print(F("S;")); Serial.print(stato_prog, BIN);
     Serial.print(F(";XM;")); Serial.print(media_x_acc, DEC);
-    Serial.print(F(";VD;")); Serial.print(media_velo_dx, DEC);
-    Serial.print(F(";VS;")); Serial.print(media_velo_sx, DEC);
     Serial.print(F(";Td;")); Serial.print(pwm_byte_dx, DEC);
     Serial.print(F(";Ts;")); Serial.print(pwm_byte_sx, DEC);
-    Serial.print(F(";Id;")); Serial.print(inversione_dx, DEC);
-    Serial.print(F(";Is;")); Serial.print(inversione_sx, DEC);
-    Serial.print(F(";B;")); Serial.print(livello_batt, DEC);
-    Serial.print(F(";C;")); Serial.print(t_acc, DEC);
+    Serial.print(F(";VD;")); Serial.print(media_velo_dx, DEC);
+    Serial.print(F(";VS;")); Serial.print(media_velo_sx, DEC);    
+    //Serial.print(F(";Id;")); Serial.print(inversione_dx, DEC);
+    //Serial.print(F(";Is;")); Serial.print(inversione_sx, DEC);
+    //Serial.print(F(";B;")); Serial.print(livello_batt, DEC);
+    //Serial.print(F(";C;")); Serial.print(t_acc, DEC);
     Serial.println();
 
     cnt_comm = CICLI_COMM;
