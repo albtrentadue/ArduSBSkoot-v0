@@ -13,6 +13,7 @@
 */
 
 //#define PRESENZA_SEMPRE
+//#define SENZA_INERZIA_STATO
 
 //Per I2C
 #include <Wire.h>
@@ -53,21 +54,26 @@ boolean hb_capovolto = false;
 #define ADDR_NUNCHUCK_R 0xA5
 #define ADDR_ACCEL 0x68 //0b1101000
 
-//Stati della macchina a stati del controllo discreto - V2
-//Fare riferimento alla documentazione "Project.xls"
-#define MV_S0_F 0b100
-#define MV_S1_F 0b110
-#define ST_S0_F 0b000
-#define ST_S1_F 0b010
-#define MV_S0_B 0b101
-#define MV_S1_B 0b111
-#define ST_S0_B 0b001
-#define ST_S1_B 0b011
+//Stati della macchina a stati del controllo discreto
+#define MV_P0_F 0b100
+#define MV_P1_F 0b110
+#define ST_P0_F 0b000
+#define ST_P1_F 0b010
+#define MV_P0_B 0b101
+#define MV_P1_B 0b111
+#define ST_P0_B 0b001
+#define ST_P1_B 0b011
 
 //Stato di funzionamento del programma
-byte stato_prog = ST_S0_F;
+byte stato_prog = ST_P0_F;
 
-//-- COSTANTI PER LA GESTIONE ACCELERAZIONE
+//Cicli di inerzia per cambio di stato
+#define INERZIA_STATO 2
+//Contatore di inerzia per i cambi di stato
+byte cnt_inerzia_stato = 0;
+
+
+//-- COSTANTI PER LA GESTIONE ACCELEROMETRO
 //Valore di g misurato dal MPU6050 da calibrare a mano.
 #define G_MPU6050 17800 //Misurato.
 //Coefficienti di riduzione di precisione per divisione
@@ -75,10 +81,7 @@ byte stato_prog = ST_S0_F;
 #define PREC_REDUX_Z 8
 //bx,min: Valore minimo (ridotto) di componente frontale bx per attivare il moto
 //TODO: Verificare sperimentalmente
-#define BX_MINIMO 50
-//bx,dir: Valore minimo (ridotto) di componente frontale bx per decidere la direzione
-//TODO: Verificare sperimentalmente
-#define BX_DIREZIONE 20
+#define BX_MINIMO 30
 //bx,max: Valore massimo (ridotto) di componente frontale bx
 //TODO: Verificare sperimentalmente
 #define BX_MASSIMO 200
@@ -86,6 +89,11 @@ byte stato_prog = ST_S0_F;
 #define SPAN_BX (BX_MASSIMO - BX_MINIMO)
 //Compensazione della pendenza di montaggio dell'accelerometro, per avere 0 secondo livella
 #define BX_COMP_MONTAGGIO -45
+
+//Costanti stato inclinazione pedana
+#define PP0 0
+#define PEND_AV 1
+#define PEND_IND 2
 
 #define CICLI_MEDIE 50 // Campioni considerati per le medie
 byte cnt_calc = CICLI_MEDIE;
@@ -102,26 +110,14 @@ int16_t serie_x[CICLI_MEDIE];
 int16_t media_x_acc;
 int16_t t_acc; //Globale: usata nel MPU-6050
 
-//Costanti stato inclinazione pedana
-#define PP0 0
-#define PF1 1
-#define PF2 2
-#define PB1 3
-#define PB2 4
-
-//Cicli di inerzia per cambio di stato
-#define INERZIA_STATO 3
-//Contatore di inerzia per i cambi di stato
-byte cnt_inerzia_stato = 0;
-
 //valore minimo del PWM che ferma il motore
-#define PWM_THROTTLE_MIN 115
+#define PWM_THROTTLE_MIN 120
 //Variazione ampiezza throttle in marcia avanti
 //TODO: da regolare
-#define SPAN_THR_FWD 30
+#define SPAN_THR_FWD 20
 //Variazione ampiezza throttle in marcia indietro
 //TODO: da regolare
-#define SPAN_THR_BWD 25
+#define SPAN_THR_BWD 20  
 //Setpoint velocità, indicizzati
 int16_t throttles_max[] = {0, 0, SPAN_THR_FWD, SPAN_THR_BWD};
 
@@ -140,8 +136,8 @@ byte pwm_byte_sx = PWM_THROTTLE_MIN;
 int livello_batt = 0;
 
 //Stati comando di inversione marcia. Attivo ALTO, pilota un NPN in saturazione
-byte inversione_dx = LOW;
-byte inversione_sx = LOW;
+byte retromarcia_dx = LOW;
+byte retromarcia_sx = LOW;
 //Flag di attivazione della procedura di inversione
 boolean inv_da_applicare_dx = false;
 boolean inv_da_applicare_sx = false;
@@ -149,8 +145,6 @@ boolean inv_da_applicare_sx = false;
 //Valore minimo del sensore analogico di velocità che considera il mezzo fermo
 //TODO: da regolare
 #define VEL_FERMO 10
-//Valore massimo assoluto del livello analogico della velocità
-#define VEL_ABS_MAX 800
 
 //Variabili per le misure della velocità delle ruote
 int32_t somma_velo_dx = 0;
@@ -159,26 +153,13 @@ int16_t media_velo_dx;
 int32_t somma_velo_sx = 0;
 int16_t serie_velo_sx[CICLI_MEDIE];
 int16_t media_velo_sx;
-//Velocita media generale - in assenza di nunchuk
-//int16_t media_velo;
-//Velocità media al ciclo di controllo precedente
-int16_t media_velo_prec_dx = 0;
-int16_t media_velo_prec_sx = 0;
-//Errore rispetto al setpoint
-int16_t err_velo_dx = 0;
-int16_t err_velo_sx = 0;
-//Variabile di controllo: differenziale di velocità
-int16_t delta_velo_dx = 0;
-int16_t delta_velo_sx = 0;
+
 
 #define CICLI_HEART 100 // cicli da attendere per l'heartbeat
 byte cnt_heart = CICLI_HEART;
 byte heart = 0;
 #define CICLI_COMM 50 // cicli da attendere per comunicare i dati
 byte cnt_comm = CICLI_COMM;
-
-//Durata di un ciclo loop in msec
-#define RITARDO_MAIN 2
 
 //------ FUNZIONI -------
 
@@ -246,7 +227,6 @@ void loop() {
   report_status();
   //leggi_comando();
   heartbeat();
-  //delay(RITARDO_MAIN);
 }
 
 /**
@@ -367,8 +347,7 @@ void abort_completo(void) {
    1. velocità eccessiva dovuto al ribaltamento dell'hoverboard
 */
 void ctrl_limiti_max() {
-  if ( media_velo_dx >= VEL_ABS_MAX || media_velo_sx >= VEL_ABS_MAX )
-    abort_completo();
+  //TODO
 }
 
 /**
@@ -376,17 +355,12 @@ void ctrl_limiti_max() {
    agli angoli misurati.
    Valori possibili:
    PP0: orizzontale
-   PF1: Inclinata lievemente in avanti
-   PB1: Inclinata lievemente all'indietro
-   PF2: Inclinata in avanti
-   PB2: Inclinata all'indietro
+   PEND_AV: Inclinata in avanti
+   PEND_IND: Inclinata all'indietro
 */
 byte stato_inclinazione(void) {
-  if (media_x_acc <= -BX_MINIMO) return PB2;
-  if (media_x_acc >= BX_MINIMO) return PF2;
-  if (media_x_acc <= -BX_DIREZIONE) return PB1;
-  if (media_x_acc >= BX_DIREZIONE) return PF1;
-
+  if (media_x_acc <= -BX_MINIMO) return PEND_IND;
+  if (media_x_acc >= BX_MINIMO) return PEND_AV;  
   return PP0;
 }
 
@@ -409,140 +383,125 @@ void transiz_stato(void)
   byte incl_pedana = stato_inclinazione();
   bool stato_velo_corr = stato_velo_ruote();
   byte nuovo_stato_prog = stato_prog;
-  byte nuova_inversione_sx = inversione_sx;
-  byte nuova_inversione_dx = inversione_dx;
+  byte nuova_retromarcia_sx = retromarcia_sx;
+  byte nuova_retromarcia_dx = retromarcia_dx;
 
   //Seleziona in base allo stato del programma
   switch (stato_prog) {
-    case ST_S0_F:
+    case ST_P0_F:
       //Gestione dello sblocco dopo mancata presenza
       if (presenza) abilita_dopo_assenza = true;
 
       switch (incl_pedana) {
-        case PF2:
-          nuovo_stato_prog = ST_S1_F;
-          break;
-        case PB1:
-        case PB2:
-          nuovo_stato_prog = ST_S0_B;
+        case PEND_AV:
+          nuovo_stato_prog = ST_P1_F;
+          break;        
+        case PEND_IND:
+          nuovo_stato_prog = ST_P0_B;
           inv_da_applicare_dx = true;
           inv_da_applicare_sx = true;
-          nuova_inversione_sx = HIGH;
-          nuova_inversione_dx = HIGH;
+          nuova_retromarcia_sx = HIGH;
+          nuova_retromarcia_dx = HIGH;
       }
       break;
     //---------------------------------//
-    case ST_S1_F:
+    case ST_P1_F:
       switch (incl_pedana) {
         case PP0:
-        case PF1:
-        case PB1:
-        case PB2:
-          nuovo_stato_prog = ST_S0_F;
+        case PEND_IND:
+          nuovo_stato_prog = ST_P0_F;
           break;
-        case PF2:
+        case PEND_AV:
           if (stato_velo_corr)
-            nuovo_stato_prog = MV_S1_F;
+            nuovo_stato_prog = MV_P1_F;
       }
       break;
     //---------------------------------//
-    case MV_S0_F:
+    case MV_P0_F:
       switch (incl_pedana) {
         case PP0:
-        case PF1:
-        case PB1:
-        case PB2:
+        case PEND_IND:
           if (!stato_velo_corr)
-            nuovo_stato_prog = ST_S0_F;
+            nuovo_stato_prog = ST_P0_F;
           break;
-        case PF2:
-          nuovo_stato_prog = MV_S1_F;
+        case PEND_AV:
+          nuovo_stato_prog = MV_P1_F;
       }
       break;
     //---------------------------------//
-    case MV_S1_F:
+    case MV_P1_F:
       switch (incl_pedana) {
         case PP0:
-        case PF1:
-        case PB1:
-        case PB2:
-          nuovo_stato_prog = MV_S0_F;
+        case PEND_IND:
+          nuovo_stato_prog = MV_P0_F;
       }
       break;
     //---------------------------------//
-    case ST_S0_B:
+    case ST_P0_B:
       //Gestione dello sblocco dopo mancata presenza
       if (presenza) abilita_dopo_assenza = true;
 
-      switch (incl_pedana) {
-        case PF1:
-        case PF2:
-          nuovo_stato_prog = ST_S0_F;
+      switch (incl_pedana) {     
+        case PEND_AV:
+          nuovo_stato_prog = ST_P0_F;
           inv_da_applicare_dx = true;
           inv_da_applicare_sx = true;
-          nuova_inversione_sx = LOW;
-          nuova_inversione_dx = LOW;
+          nuova_retromarcia_sx = LOW;
+          nuova_retromarcia_dx = LOW;
           break;
-        case PB2:
-          nuovo_stato_prog = ST_S1_B;
+        case PEND_IND:
+          nuovo_stato_prog = ST_P1_B;
       }
       break;
     //---------------------------------//
-    case ST_S1_B:
+    case ST_P1_B:
       switch (incl_pedana) {
-        case PP0:
-        case PF1:
-        case PF2:
-        case PB1:
-          nuovo_stato_prog = ST_S0_B;
+        case PP0:        
+        case PEND_AV:        
+          nuovo_stato_prog = ST_P0_B;
           break;
-        case PB2:
+        case PEND_IND:
           if (stato_velo_corr)
-            nuovo_stato_prog = MV_S1_B;
+            nuovo_stato_prog = MV_P1_B;
       }
       break;
     //---------------------------------//
-    case MV_S0_B:
+    case MV_P0_B:
       switch (incl_pedana) {
-        case PP0:
-        case PF1:
-        case PF2:
-        case PB1:
+        case PP0:        
+        case PEND_AV:        
           if (!stato_velo_corr)
-            nuovo_stato_prog = ST_S0_B;
+            nuovo_stato_prog = ST_P0_B;
           break;
-        case PB2:
-          nuovo_stato_prog = MV_S1_B;
+        case PEND_IND:
+          nuovo_stato_prog = MV_P1_B;
       }
       break;
     //---------------------------------//
-    case MV_S1_B:
+    case MV_P1_B:
       switch (incl_pedana) {
-        case PP0:
-        case PF1:
-        case PF2:
-        case PB1:
-          nuovo_stato_prog = MV_S0_B;
+        case PP0:        
+        case PEND_AV:        
+          nuovo_stato_prog = MV_P0_B;
       }
       break;
   }
 
-  /*
-    SENZA INERZIA
-    stato_prog = nuovo_stato_prog;
-    inversione_sx = nuova_inversione_sx;
-    inversione_dx = nuova_inversione_dx;
-    cnt_inerzia_stato = 0;
-  */
-
+#ifdef SENZA_INERZIA_STATO
+  //SENZA INERZIA
+  stato_prog = nuovo_stato_prog;
+  retromarcia_sx = nuova_retromarcia_sx;
+  retromarcia_dx = nuova_retromarcia_dx;
+  cnt_inerzia_stato = 0;
+#else
   //INERZIA CAMBIO STATO
   if (nuovo_stato_prog != stato_prog) {
     //Se c'è possibilità di cambio, si controlla l'inerzia
     if (++cnt_inerzia_stato == INERZIA_STATO) {
       //Superata l'inerzia, si cambia stato
       stato_prog = nuovo_stato_prog;
-      inversione_sx = nuova_inversione_sx;
-      inversione_dx = nuova_inversione_dx;
+      retromarcia_sx = nuova_retromarcia_sx;
+      retromarcia_dx = nuova_retromarcia_dx;
       cnt_inerzia_stato = 0;
     } else {
       //NON cambia stato ed annulla eventuali inversioni
@@ -552,6 +511,31 @@ void transiz_stato(void)
   } else
     //resetta il conteggio di inerzia
     cnt_inerzia_stato = 0;
+#endif
+
+}
+ 
+
+/**
+   Applica la procedura di inversione di marcia ai controllers:
+   - Stop per un certo tempo
+   - Applicazione del livello logico
+*/
+void applica_inversione(void)
+{
+  if (inv_da_applicare_dx || inv_da_applicare_sx) {
+    Serial.println(F("CAMBIO DIREZIONE"));
+    if (inv_da_applicare_dx) analogWrite(PWM_DX, 0);
+    if (inv_da_applicare_sx) analogWrite(PWM_SX, 0);
+    delay(100);
+    if (inv_da_applicare_dx) digitalWrite(INVERS_DX, retromarcia_dx);
+    if (inv_da_applicare_sx) digitalWrite(INVERS_SX, retromarcia_sx);
+    delay(100);
+    if (inv_da_applicare_dx) analogWrite(PWM_DX, PWM_THROTTLE_MIN);
+    if (inv_da_applicare_sx) analogWrite(PWM_SX, PWM_THROTTLE_MIN);
+    inv_da_applicare_dx = false;
+    inv_da_applicare_sx = false;    
+  }
 }
 
 /**
@@ -563,33 +547,18 @@ void applica_pwm(void)
   //TODO: applicare le variazioni derivanti dal nunchuck
   //TODO: applicare la calibrazione analogica di compensazione DX/SX
 
-  //Approccio di controllo del moto: QUADRATICO RISPETTO ALLA PENDENZA
   byte idx = stato_prog & 0b11;
-  /*
-    if (throttles_max[idx]) { //Se diverso di zero
-    int16_t ax_lim = min(abs(media_x_acc), BX_MASSIMO);
-    float fatt_b = float(ax_lim - BX_MINIMO) / SPAN_BX;
-    ampiezza_thr_dx = byte(map(ax_lim, BX_MINIMO, BX_MASSIMO, 0, throttles_max[idx]) * fatt_b);
-    ampiezza_thr_sx = byte(map(ax_lim, BX_MINIMO, BX_MASSIMO, 0, throttles_max[idx]) * fatt_b);
-    pwm_byte_dx = PWM_THROTTLE_MIN + ampiezza_thr_dx;
-    pwm_byte_sx = PWM_THROTTLE_MIN + ampiezza_thr_sx;
-    }
-    else {
-    //reset del grado di throttle
-    ampiezza_thr_dx = 0;
-    ampiezza_thr_sx = 0;
-    pwm_byte_dx = 0;
-    pwm_byte_sx = 0;
-    }
-  */
+ 
   if (throttles_max[idx] != 0) {
-    ampiezza_thr_dx = constrain(ampiezza_thr_dx+0.1, 0, throttles_max[idx]);
-    ampiezza_thr_sx = constrain(ampiezza_thr_sx+0.1, 0, throttles_max[idx]);
+    //float dr = (1.0 - ampiezza_thr_dx / throttles_max[idx]) * 0.25;
+    float dr = 0.15;
+    ampiezza_thr_dx = constrain(ampiezza_thr_dx+dr, 0, throttles_max[idx]);
+    ampiezza_thr_sx = constrain(ampiezza_thr_sx+dr, 0, throttles_max[idx]);
     ultima_mxamp_thr = throttles_max[idx];
   }
   else {
-    ampiezza_thr_dx = constrain(ampiezza_thr_dx-0.075, -15, ultima_mxamp_thr);
-    ampiezza_thr_sx = constrain(ampiezza_thr_sx-0.075, -15, ultima_mxamp_thr);
+    ampiezza_thr_dx = constrain(ampiezza_thr_dx-0.2, -15, ultima_mxamp_thr);
+    ampiezza_thr_sx = constrain(ampiezza_thr_sx-0.2, -15, ultima_mxamp_thr);
   }
   pwm_byte_dx = byte(PWM_THROTTLE_MIN + ampiezza_thr_dx);
   pwm_byte_sx = byte(PWM_THROTTLE_MIN + ampiezza_thr_sx);
@@ -621,26 +590,6 @@ void applica_frenata(byte frenata)
 }
 
 /**
-   Applica la procedura di inversione di marcia ai controllers:
-   - Stop per un certo tempo
-   - Applicazione del livello logico
-*/
-void applica_inversione(void)
-{
-  if (inv_da_applicare_dx || inv_da_applicare_sx) {
-    Serial.println(F("CAMBIO DIREZIONE"));
-    if (inv_da_applicare_dx) analogWrite(PWM_DX, 0);
-    if (inv_da_applicare_sx) analogWrite(PWM_SX, 0);
-    delay(100);
-    if (inv_da_applicare_dx) digitalWrite(INVERS_DX, inversione_dx);
-    if (inv_da_applicare_sx) digitalWrite(INVERS_SX, inversione_sx);
-    delay(100);
-    inv_da_applicare_dx = false;
-    inv_da_applicare_sx = false;
-  }
-}
-
-/**
    Scrive lo stato del programma sulla seriale
    Eseguito ogni CICLI_REPORT iterazioni
 */
@@ -654,8 +603,8 @@ void report_status(void)
     Serial.print(F(";Ts;")); Serial.print(pwm_byte_sx, DEC);
     Serial.print(F(";VD;")); Serial.print(media_velo_dx, DEC);
     Serial.print(F(";VS;")); Serial.print(media_velo_sx, DEC);    
-    //Serial.print(F(";Id;")); Serial.print(inversione_dx, DEC);
-    //Serial.print(F(";Is;")); Serial.print(inversione_sx, DEC);
+    //Serial.print(F(";Id;")); Serial.print(retromarcia_dx, DEC);
+    //Serial.print(F(";Is;")); Serial.print(retromarcia_sx, DEC);
     //Serial.print(F(";B;")); Serial.print(livello_batt, DEC);
     //Serial.print(F(";C;")); Serial.print(t_acc, DEC);
     Serial.println();
