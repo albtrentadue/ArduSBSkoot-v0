@@ -110,30 +110,38 @@ int16_t serie_x[CICLI_MEDIE];
 int16_t media_x_acc;
 int16_t t_acc; //Globale: usata nel MPU-6050
 
+
+//-- COSTANTI E VARIABILI GESTIONE DEL THROTTLE
 //valore minimo del PWM che ferma il motore
 #define PWM_THROTTLE_MIN 120
-//Variazione ampiezza throttle in marcia avanti
+//Ampiezza throttle iniziale in marcia avanti
 //TODO: da regolare
-#define SPAN_THR_FWD 20
-//Variazione ampiezza throttle in marcia indietro
+#define THR_INIT_FWD 120
+//Ampiezza throttle iniziale in marcia indietro
 //TODO: da regolare
-#define SPAN_THR_BWD 20  
-//Setpoint velocità, indicizzati
-int16_t throttles_max[] = {0, 0, SPAN_THR_FWD, SPAN_THR_BWD};
-
+#define THR_INIT_BWD 120
+//Ampiezza throttle a regime in marcia avanti
+//TODO: da regolare
+#define THR_REG_FWD 150
+//Ampiezza throttle a regime in marcia indietro
+//TODO: da regolare
+#define THR_REG_BWD 140
+//Setpoint velocità, indicizzati dai 2 LSB dello stato
+int16_t throttles_reg[] = {0, 0, THR_REG_FWD, THR_REG_BWD};
+//costante dell'esponenziale negativo per l'accelerazione
+#define ACC_THR_KAPPA 0.2
+//costante decremento lineare della decelerazione
+#define DEC_THR_LIN 2.5
+//Valore di throttle sotto il minimo per resettare la corrente
+#define PWM_THROTTLE_ZEROCURR 100
+//Bilanciamento throttle ruota SINISTRA (delta rispetto alla destra)
+#define PWM_THROTTLE_SX_DELTA 2
 //Livello di throttle da applicare per il PWM
-float ampiezza_thr_dx = 0.0;
-float ampiezza_thr_sx = 0.0;
-float ultima_mxamp_thr = 0.0;
+float throttle_dx = 0.0;
+float throttle_sx = 0.0;
 //Valore effettivamente applicato al PWM
 byte pwm_byte_dx = PWM_THROTTLE_MIN;
 byte pwm_byte_sx = PWM_THROTTLE_MIN;
-
-// Livelli analogici del partitore batteria
-// TODO: Calibrare rispetto al valore massimo della batteria
-#define BATT_OK 1000
-#define BATT_MIN 800
-int livello_batt = 0;
 
 //Stati comando di inversione marcia. Attivo ALTO, pilota un NPN in saturazione
 byte retromarcia_dx = LOW;
@@ -154,6 +162,12 @@ int32_t somma_velo_sx = 0;
 int16_t serie_velo_sx[CICLI_MEDIE];
 int16_t media_velo_sx;
 
+
+// Livelli analogici del partitore batteria
+// TODO: Calibrare rispetto al valore massimo della batteria
+#define BATT_OK 1000
+#define BATT_MIN 800
+int livello_batt = 0;
 
 #define CICLI_HEART 100 // cicli da attendere per l'heartbeat
 byte cnt_heart = CICLI_HEART;
@@ -547,22 +561,44 @@ void applica_pwm(void)
   //TODO: applicare le variazioni derivanti dal nunchuck
   //TODO: applicare la calibrazione analogica di compensazione DX/SX
 
-  byte idx = stato_prog & 0b11;
- 
-  if (throttles_max[idx] != 0) {
-    //float dr = (1.0 - ampiezza_thr_dx / throttles_max[idx]) * 0.25;
-    float dr = 0.15;
-    ampiezza_thr_dx = constrain(ampiezza_thr_dx+dr, 0, throttles_max[idx]);
-    ampiezza_thr_sx = constrain(ampiezza_thr_sx+dr, 0, throttles_max[idx]);
-    ultima_mxamp_thr = throttles_max[idx];
-  }
-  else {
-    ampiezza_thr_dx = constrain(ampiezza_thr_dx-0.2, -15, ultima_mxamp_thr);
-    ampiezza_thr_sx = constrain(ampiezza_thr_sx-0.2, -15, ultima_mxamp_thr);
-  }
-  pwm_byte_dx = byte(PWM_THROTTLE_MIN + ampiezza_thr_dx);
-  pwm_byte_sx = byte(PWM_THROTTLE_MIN + ampiezza_thr_sx);
+  byte idx = stato_prog & 0b11; 
+  float dt = 0.0;
 
+  switch (stato_prog) {
+    //Reset alla condizione iniziale al passaggio di stato da fermo a in moto
+    case ST_P0_F:
+    case ST_P0_B:
+      throttle_dx = PWM_THROTTLE_MIN;
+      throttle_sx = PWM_THROTTLE_MIN;
+    
+    case ST_P1_F:
+      throttle_dx = THR_INIT_FWD;
+      throttle_sx = THR_INIT_FWD;
+      break;
+  
+    case ST_P1_B:
+      throttle_dx = THR_INIT_BWD;
+      throttle_sx = THR_INIT_BWD;
+      break;
+  
+    case MV_P1_F:
+    case MV_P1_B:
+      //Profilo esponenziale negativo throttle in accelerazione
+      dt = (throttles_reg[idx] - throttle_dx) * ACC_THR_KAPPA;    
+      throttle_dx = throttle_dx+dt;
+      throttle_sx = throttle_dx;  //Per ora
+      break;
+      
+    case MV_P0_F:
+    case MV_P0_B:
+      //Profilo throttle in decelerazione lineare
+      throttle_dx = constrain(throttle_dx-DEC_THR_LIN, PWM_THROTTLE_ZEROCURR, 200); //valore molto maggiore del massimo
+      throttle_sx = throttle_dx;  //Per ora
+  }
+  
+  pwm_byte_dx = byte(throttle_dx);
+  pwm_byte_sx = byte(throttle_sx)+ PWM_THROTTLE_SX_DELTA ;
+    
 #ifndef PRESENZA_SEMPRE
   //Non aziona i motori se:
   //1. I pulsanti di presenza non sono entrambi schiacciati
