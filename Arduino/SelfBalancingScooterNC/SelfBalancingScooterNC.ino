@@ -55,24 +55,22 @@ boolean hb_capovolto = false;
 #define ADDR_ACCEL 0x68 //0b1101000
 
 //Stati della macchina a stati del controllo discreto
-#define MV_P0_F 0b100
-#define MV_P1_F 0b110
-#define ST_P0_F 0b000
-#define ST_P1_F 0b010
-#define MV_P0_B 0b101
-#define MV_P1_B 0b111
-#define ST_P0_B 0b001
-#define ST_P1_B 0b011
+#define ST_P0_F 0b0000
+#define ST_P1_F 0b0010
+#define MV_P0_F 0b1000
+#define MV_P1_F 0b1010
+#define MV_PR_F 0b1100
+#define ST_P0_B 0b0001
+#define ST_P1_B 0b0011
+#define MV_P0_B 0b1001
+#define MV_P1_B 0b1011
+#define MV_PR_B 0b1101
 
 //Stato di funzionamento del programma
 byte stato_prog = ST_P0_F;
 
-//flag di pedana piatta = progressione in crociera
-boolean cruise_on = false;
-boolean cruise_da_applicare = false;
-
 //Cicli di inerzia per cambio di stato
-#define INERZIA_STATO 2
+#define INERZIA_STATO 8
 //Contatore di inerzia per i cambi di stato
 byte cnt_inerzia_stato = 0;
 
@@ -98,6 +96,7 @@ byte cnt_inerzia_stato = 0;
 #define PEND_AV 1
 #define PEND_IND 2
 
+
 #define CICLI_MEDIE 50 // Campioni considerati per le medie
 byte cnt_calc = CICLI_MEDIE;
 
@@ -116,16 +115,16 @@ int16_t t_acc; //Globale: usata nel MPU-6050
 
 //-- COSTANTI E VARIABILI GESTIONE DEL THROTTLE
 //valore minimo del PWM che ferma il motore
-#define PWM_THROTTLE_MIN 113
+#define PWM_THROTTLE_MIN 115
 //Ampiezza throttle iniziale in marcia avanti
 //TODO: da regolare
-#define THR_INIT_FWD 113
+#define THR_INIT_FWD 115
 //Ampiezza throttle a regime in marcia avanti
 //TODO: da regolare
 #define THR_REG_FWD 170
 //Ampiezza throttle iniziale in marcia indietro
 //TODO: da regolare
-#define THR_INIT_BWD 113
+#define THR_INIT_BWD 115
 //Ampiezza throttle a regime in marcia indietro
 //TODO: da regolare
 #define THR_REG_BWD 150
@@ -140,7 +139,7 @@ int16_t throttles_reg[] = {0, 0, THR_REG_FWD, THR_REG_BWD};
 //Valore di throttle sotto il minimo per resettare la corrente
 #define PWM_THROTTLE_ZEROCURR 100
 //Bilanciamento throttle ruota SINISTRA (delta rispetto alla destra)
-#define PWM_THROTTLE_SX_DELTA 8
+#define PWM_THROTTLE_SX_DELTA 6
 //Livello di throttle da applicare per il PWM
 float throttle_dx = 0.0;
 float throttle_sx = 0.0;
@@ -317,13 +316,12 @@ void leggi_nunchuck(void)
 */
 void leggi_presenza(void)
 {
-  byte puls = digitalRead(PRESENZA);
-  if (puls == HIGH) { //Entrambi pulsanti schiacciati (aperti)
+  if (digitalRead(PRESENZA) == LOW) { //Entrambi pulsanti chiusi
     if (cnt_presenza > 0) --cnt_presenza;
     else //cnt_presenza è 0
       presenza = true;
   }
-  else { //Almeno un pulsante sollevato (chiuso)
+  else { //Almeno un pulsante aperto
     if (cnt_presenza < CONFERME_PRESENZA) ++cnt_presenza;
     else //cnt_presenza è CONFERME_PRESENZA
       presenza = false;
@@ -404,14 +402,12 @@ void transiz_stato(void)
   byte nuovo_stato_prog = stato_prog;
   byte nuova_retromarcia_sx = retromarcia_sx;
   byte nuova_retromarcia_dx = retromarcia_dx;
-  bool nuovo_cruise_on = cruise_on;
 
   //Seleziona in base allo stato del programma
   switch (stato_prog) {
-    case ST_P0_F: //000
+    case ST_P0_F: //0000
       //Gestione dello sblocco dopo mancata presenza
       if (presenza) abilita_dopo_assenza = true;
-
       switch (incl_pedana) {
         case PEND_AV:
           nuovo_stato_prog = ST_P1_F;
@@ -425,7 +421,7 @@ void transiz_stato(void)
       }
       break;
     //---------------------------------//
-    case ST_P1_F: //010
+    case ST_P1_F: //0010
       switch (incl_pedana) {
         case PP0:
         case PEND_IND:
@@ -437,35 +433,51 @@ void transiz_stato(void)
       }
       break;
     //---------------------------------//
-    case MV_P0_F: //100
-      nuovo_cruise_on = false;
+    case MV_P0_F: //1000      
       switch (incl_pedana) {
-        case PP0:
-        case PEND_IND:
+        case PP0:        
           if (!stato_corrente_ruote)
             nuovo_stato_prog = ST_P0_F;
+          break;
+        case PEND_IND:
+          nuovo_stato_prog = MV_PR_F;
           break;
         case PEND_AV:
           nuovo_stato_prog = MV_P1_F;
       }
       break;
     //---------------------------------//
-    case MV_P1_F: //110
+    case MV_P1_F: //1010
       switch (incl_pedana) {
         case PEND_AV:
-          nuovo_cruise_on = false;  
           if (!stato_corrente_ruote)
             nuovo_stato_prog = ST_P1_F;
           break;
         case PP0:
-          nuovo_cruise_on = true;
+          nuovo_stato_prog = MV_P0_F;
           break;
         case PEND_IND:
-          nuovo_stato_prog = MV_P0_F;
+          nuovo_stato_prog = MV_PR_F;
+          break;
       }
       break;
     //---------------------------------//
-    case ST_P0_B: //001
+    case MV_PR_F: //1100
+      switch (incl_pedana) {
+        case PEND_AV:          
+          nuovo_stato_prog = MV_P1_F;
+          break;
+        case PP0:
+          nuovo_stato_prog = MV_P0_F;
+          break;
+        case PEND_IND:
+          if (!stato_corrente_ruote)
+            nuovo_stato_prog = ST_P0_F;
+          break;
+      }
+      break;      
+    //---------------------------------//
+    case ST_P0_B: //0001
       //Gestione dello sblocco dopo mancata presenza
       if (presenza) abilita_dopo_assenza = true;
 
@@ -482,7 +494,7 @@ void transiz_stato(void)
       }
       break;
     //---------------------------------//
-    case ST_P1_B: //011
+    case ST_P1_B: //0011
       switch (incl_pedana) {
         case PP0:        
         case PEND_AV:        
@@ -494,33 +506,49 @@ void transiz_stato(void)
       }
       break;
     //---------------------------------//
-    case MV_P0_B: //101
-      nuovo_cruise_on = false;
+    case MV_P0_B: //1001
       switch (incl_pedana) {
         case PP0:        
-        case PEND_AV:        
           if (!stato_corrente_ruote)
             nuovo_stato_prog = ST_P0_B;
           break;
+        case PEND_AV:
+          nuovo_stato_prog = MV_PR_B;          
+          break;
         case PEND_IND:
-          nuovo_stato_prog = MV_P1_B;
+          nuovo_stato_prog = MV_P1_B;          
       }
       break;
     //---------------------------------//
-    case MV_P1_B: //111
+    case MV_P1_B: //1011
       switch (incl_pedana) {
         case PEND_IND:  
-          nuovo_cruise_on = false;
           if (!stato_corrente_ruote)
             nuovo_stato_prog = ST_P1_B;
           break;        
         case PP0:        
-          nuovo_cruise_on = true;
-          break;
-        case PEND_AV:        
           nuovo_stato_prog = MV_P0_B;
+          break;        
+        case PEND_AV:        
+          nuovo_stato_prog = MV_PR_B;
+          break;        
       }
       break;
+    //---------------------------------//
+    case MV_PR_B: //1101
+      switch (incl_pedana) {
+        case PEND_IND:  
+          nuovo_stato_prog = MV_P1_B;
+          break;        
+        case PP0:        
+          nuovo_stato_prog = MV_P0_B;
+          break;        
+        case PEND_AV:
+          if (!stato_corrente_ruote)        
+            nuovo_stato_prog = ST_P0_B;
+          break;        
+      }
+      break;      
   }
 
 #ifdef SENZA_INERZIA_STATO
@@ -528,7 +556,6 @@ void transiz_stato(void)
   stato_prog = nuovo_stato_prog;
   retromarcia_sx = nuova_retromarcia_sx;
   retromarcia_dx = nuova_retromarcia_dx;
-  cruise_on = nuovo_cruise_on;
   cnt_inerzia_stato = 0;
 #else
   //INERZIA CAMBIO STATO
@@ -539,7 +566,6 @@ void transiz_stato(void)
       stato_prog = nuovo_stato_prog;
       retromarcia_sx = nuova_retromarcia_sx;
       retromarcia_dx = nuova_retromarcia_dx;
-      cruise_on = nuovo_cruise_on;
       cnt_inerzia_stato = 0;
     } else {
       //NON cambia stato ed annulla eventuali inversioni
@@ -589,30 +615,33 @@ void applica_pwm(void)
   float dt = 0.0;
 
   switch (stato_prog) {    
-    case ST_P0_F: //000
-    case ST_P0_B: //001
-    case ST_P1_F: //010  
-    case ST_P1_B: //011
+    case ST_P0_F: //0000
+    case ST_P0_B: //0001
+    case ST_P1_F: //0010  
+    case ST_P1_B: //0011
       //Reset alla condizione iniziale al passaggio di stato da fermo a in moto
       throttle_dx = throttles_init[idx];
       throttle_sx = throttles_init[idx];
       break;
   
-    case MV_P1_F: //110
-    case MV_P1_B: //111
-      if (!cruise_on) {
-        //Profilo esponenziale negativo throttle in accelerazione
-        dt = (throttles_reg[idx] - throttle_dx) * ACC_THR_KAPPA;    
-        throttle_dx = throttle_dx+dt;
-        throttle_sx = throttle_dx;  //Per ora
-      }
+    case MV_P1_F: //1010
+    case MV_P1_B: //1011
+      //Profilo esponenziale negativo throttle in accelerazione
+      dt = (throttles_reg[idx] - throttle_dx) * ACC_THR_KAPPA;    
+      throttle_dx = throttle_dx+dt;
+      throttle_sx = throttle_dx;  //Per ora
       break;
       
-    case MV_P0_F: //100
-    case MV_P0_B: //101
+    case MV_PR_F: //1100
+    case MV_PR_B: //1101
       //Profilo throttle in decelerazione lineare
       throttle_dx = throttle_dx > PWM_THROTTLE_ZEROCURR ? throttle_dx-DEC_THR_LIN : PWM_THROTTLE_ZEROCURR;
       throttle_sx = throttle_dx;  //Per ora
+      break;
+
+    case MV_P0_F: //1000
+    case MV_P0_B: //1001
+      //Mantenimento del throtte corrente
       break;
   }
   
@@ -659,6 +688,7 @@ void report_status(void)
     Serial.print(F(";Ts;")); Serial.print(pwm_byte_sx, DEC);
     Serial.print(F(";VD;")); Serial.print(media_corr_dx, DEC);
     Serial.print(F(";VS;")); Serial.print(media_corr_sx, DEC);    
+    Serial.print(F(";Pr;")); Serial.print(cnt_presenza, DEC);
     //Serial.print(F(";Id;")); Serial.print(retromarcia_dx, DEC);
     //Serial.print(F(";Is;")); Serial.print(retromarcia_sx, DEC);
     //Serial.print(F(";B;")); Serial.print(livello_batt, DEC);
