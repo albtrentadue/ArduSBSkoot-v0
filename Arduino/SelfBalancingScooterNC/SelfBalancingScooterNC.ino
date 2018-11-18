@@ -76,21 +76,14 @@ byte cnt_inerzia_stato = 0;
 
 
 //-- COSTANTI PER LA GESTIONE ACCELEROMETRO
-//Valore di g misurato dal MPU6050 da calibrare a mano.
-#define G_MPU6050 17800 //Misurato.
 //Coefficienti di riduzione di precisione per divisione
 #define PREC_REDUX_X 16
 #define PREC_REDUX_Z 8
 //bx,min: Valore minimo (ridotto) di componente frontale bx per attivare il moto
 //TODO: Verificare sperimentalmente
-#define BX_MINIMO 40
-//bx,max: Valore massimo (ridotto) di componente frontale bx
-//TODO: Verificare sperimentalmente
-#define BX_MASSIMO 200
-//Variabilità componente frontale bx
-#define SPAN_BX (BX_MASSIMO - BX_MINIMO)
+#define BX_MINIMO 60
 //Compensazione della pendenza di montaggio dell'accelerometro, per avere 0 secondo livella
-#define BX_COMP_MONTAGGIO -45
+#define BX_COMP_MONTAGGIO -39
 //Costanti stato inclinazione pedana
 #define PP0 0
 #define PEND_AV 1
@@ -115,16 +108,16 @@ int16_t t_acc; //Globale: usata nel MPU-6050
 
 //-- COSTANTI E VARIABILI GESTIONE DEL THROTTLE
 //valore minimo del PWM che ferma il motore
-#define PWM_THROTTLE_MIN 115
+#define PWM_THROTTLE_MIN 116
 //Ampiezza throttle iniziale in marcia avanti
 //TODO: da regolare
-#define THR_INIT_FWD 115
+#define THR_INIT_FWD 116
 //Ampiezza throttle a regime in marcia avanti
 //TODO: da regolare
-#define THR_REG_FWD 170
+#define THR_REG_FWD 160
 //Ampiezza throttle iniziale in marcia indietro
 //TODO: da regolare
-#define THR_INIT_BWD 115
+#define THR_INIT_BWD 116
 //Ampiezza throttle a regime in marcia indietro
 //TODO: da regolare
 #define THR_REG_BWD 150
@@ -133,13 +126,13 @@ int16_t throttles_init[] = {PWM_THROTTLE_MIN, PWM_THROTTLE_MIN, THR_INIT_FWD,THR
 //Setpoint velocità a regime, indicizzati dai 2 LSB dello stato
 int16_t throttles_reg[] = {0, 0, THR_REG_FWD, THR_REG_BWD};
 //costante dell'esponenziale negativo per l'accelerazione
-#define ACC_THR_KAPPA 0.015
+#define ACC_THR_KAPPA 0.012
 //costante decremento lineare della decelerazione
 #define DEC_THR_LIN 0.75
 //Valore di throttle sotto il minimo per resettare la corrente
 #define PWM_THROTTLE_ZEROCURR 100
 //Bilanciamento throttle ruota SINISTRA (delta rispetto alla destra)
-#define PWM_THROTTLE_SX_DELTA 6
+#define PWM_THROTTLE_SX_DELTA 5
 //Livello di throttle da applicare per il PWM
 float throttle_dx = 0.0;
 float throttle_sx = 0.0;
@@ -480,7 +473,6 @@ void transiz_stato(void)
     case ST_P0_B: //0001
       //Gestione dello sblocco dopo mancata presenza
       if (presenza) abilita_dopo_assenza = true;
-
       switch (incl_pedana) {     
         case PEND_AV:
           nuovo_stato_prog = ST_P0_F;
@@ -641,7 +633,9 @@ void applica_pwm(void)
 
     case MV_P0_F: //1000
     case MV_P0_B: //1001
-      //Mantenimento del throtte corrente
+      //Profilo throttle in decelerazione lineare più lieve
+      throttle_dx = throttle_dx > PWM_THROTTLE_ZEROCURR ? throttle_dx-(DEC_THR_LIN / 2) : PWM_THROTTLE_ZEROCURR;
+      throttle_sx = throttle_dx;  //Per ora
       break;
   }
   
@@ -660,8 +654,8 @@ void applica_pwm(void)
     analogWrite(PWM_SX, pwm_byte_sx);
   }
   else {
-    analogWrite(PWM_DX, 0);
-    analogWrite(PWM_SX, 0);
+    analogWrite(PWM_DX, PWM_THROTTLE_ZEROCURR);
+    analogWrite(PWM_SX, PWM_THROTTLE_ZEROCURR);
   }
 }
 
@@ -687,8 +681,7 @@ void report_status(void)
     Serial.print(F(";Td;")); Serial.print(pwm_byte_dx, DEC);
     Serial.print(F(";Ts;")); Serial.print(pwm_byte_sx, DEC);
     Serial.print(F(";VD;")); Serial.print(media_corr_dx, DEC);
-    Serial.print(F(";VS;")); Serial.print(media_corr_sx, DEC);    
-    Serial.print(F(";Pr;")); Serial.print(cnt_presenza, DEC);
+    Serial.print(F(";VS;")); Serial.print(media_corr_sx, DEC);        
     //Serial.print(F(";Id;")); Serial.print(retromarcia_dx, DEC);
     //Serial.print(F(";Is;")); Serial.print(retromarcia_sx, DEC);
     //Serial.print(F(";B;")); Serial.print(livello_batt, DEC);
