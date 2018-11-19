@@ -182,6 +182,7 @@ void setup() {
   Serial.begin(115200);
 
   // Inizializzazione I/O
+  pinMode(LED_BUILTIN, OUTPUT);
   pinMode(PWM_DX, OUTPUT);
   pinMode(PWM_SX, OUTPUT);
   pinMode(FRENATA_DX, OUTPUT);
