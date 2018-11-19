@@ -5,10 +5,8 @@
  * Utilizza le connessioni effettive realizzate dalla scheda di
  * interfaccia Arduino/Controllers
  * 
- * By Alberto Trentadue 2017-2018
+ * By Alberto Trentadue 2018
  */
-
-#define STATUS_LED 13
 
 // Pin dei PWM di controllo brushless
 #define PWM_DX 3
@@ -22,21 +20,17 @@
 #define JUMPER 11
 
 //Livello di throttle via PWM
-int pwm_throttle = 135;
+int pwm_throttle = 120;
 
 //Costanti del rivelatore di velocità
-#define RIV_VEL_HIGH 430 //valore limite alto A/D dell'onda quadra
-#define RIV_VEL_LEV 470
-#define RIV_VEL_LOW 370 //valore limite basso A/D dell'onda quadra
-int xs, xd;
-bool stato_riv_vel_dx = false;
-bool stato_riv_vel_sx = false;
+byte stato_riv_vel_dx = LOW;
+byte stato_riv_vel_sx = LOW;
 int cnt_periodo_dx = 0;
 int cnt_periodo_sx = 0;
 //Numero massimo di conteggi oltre il quale la ruota si considera quasi ferma
 #define MAX_PERIODO_RIV 120
-int last_periodo_dx = MAX_PERIODO_RIV;
-int last_periodo_sx = MAX_PERIODO_RIV;
+int vel_dx = 0;
+int vel_sx = 0;
 
 //Livello batteria
 int livello_batt = 0;
@@ -44,7 +38,7 @@ int livello_batt = 0;
 #define CICLI_HEART 100 // cicli da attendere per l'heartbeat
 byte cnt_heart = CICLI_HEART;
 byte heart = 0;
-#define CICLI_COMM 50 // cicli da attendere per comunicare i dati
+#define CICLI_COMM 5 // cicli da attendere per comunicare i dati
 byte cnt_comm = CICLI_COMM;
 
 void setup() {
@@ -57,6 +51,8 @@ void setup() {
   pinMode(INVERS_SX, OUTPUT);
   pinMode(LED_BUILTIN, OUTPUT);
   pinMode(JUMPER, INPUT_PULLUP);
+  pinMode(MISVEL_DX, INPUT);
+  pinMode(MISVEL_SX, INPUT);
   
   digitalWrite(FRENATA_DX, 0);  
   digitalWrite(FRENATA_SX, 0);
@@ -65,21 +61,23 @@ void setup() {
 
   //Il pwm parte da zero
   analogWrite(PWM_DX, 0);
-  analogWrite(PWM_SX, 0);  
+  analogWrite(PWM_SX, 0); 
+
+  stato_riv_vel_dx = digitalRead(MISVEL_DX);
+  stato_riv_vel_sx = digitalRead(MISVEL_SX);
 }
 
 void loop() {
   if (digitalRead(JUMPER) == LOW) {
-      //analogWrite(PWM_DX, pwm_throttle);
+      analogWrite(PWM_DX, pwm_throttle);
       analogWrite(PWM_SX, pwm_throttle);      
   }
   else {
-      //analogWrite(PWM_DX, 0);
+      analogWrite(PWM_DX, 0);
       analogWrite(PWM_SX, 0);           
   }
   
-  rivela_velocita();
-  livello_batt=analogRead(A0);       
+  rivela_velocita();  
   report_status();
   heartbeat();
   
@@ -89,26 +87,31 @@ void loop() {
 //calcola il periodo dalle onde quadre dei rivelatori
 void rivela_velocita(void) 
 {
-  bool riv_vel_active;
+  byte x;
 
-  //SINISTRA
-  //scarta la prima lettura
-  analogRead(MISVEL_SX);
-  xs=analogRead(MISVEL_SX);
-  if (abs(xs - RIV_VEL_LEV) < 50) {
-    //Zona conteggio
-    if (stato_riv_vel_sx) cnt_periodo_sx = constrain(++cnt_periodo_sx, 0, MAX_PERIODO_RIV);
-    else {
-      cnt_periodo_sx = 0;
-      stato_riv_vel_sx = true;
-    }
+  //Transizione ad ogni cambio di livello, si assume duty al 50%
+  //DESTRA
+  x = digitalRead(MISVEL_DX);
+  if (stato_riv_vel_dx == x) 
+    if (cnt_periodo_dx < MAX_PERIODO_RIV) cnt_periodo_dx++;
+    else vel_dx = 0;          
+  else {    
+    vel_dx = (MAX_PERIODO_RIV * 10 / cnt_periodo_dx);
+    cnt_periodo_dx = 0;
   }
-  else //Zona non conteggio
-    if (stato_riv_vel_sx) {
-      last_periodo_sx = cnt_periodo_sx;
-      stato_riv_vel_sx = false;
-    }
-          
+  stato_riv_vel_dx = x;
+ 
+  //SINISTRA
+  x = digitalRead(MISVEL_SX);
+  if (stato_riv_vel_sx == x) 
+    if (cnt_periodo_sx < MAX_PERIODO_RIV) cnt_periodo_sx++;
+    else vel_sx = 0;          
+  else {
+    vel_sx = (MAX_PERIODO_RIV * 10 / cnt_periodo_sx);
+    cnt_periodo_sx = 0;
+  }
+  stato_riv_vel_sx = x;
+            
 }
 
 
@@ -121,11 +124,8 @@ void report_status(void)
   cnt_comm--;
   if (cnt_comm == 0) {
     //Serial.print(F(";Td;")); Serial.print(pwm_throttle, DEC);
-    //Serial.print(F(";XD;")); Serial.print(xd, DEC);
-    //Serial.print(F(";XS;")); Serial.print(xs, DEC);        
-    Serial.print(F(";PD;")); Serial.print(last_periodo_dx, DEC);
-    Serial.print(F(";PS;")); Serial.print(last_periodo_sx, DEC);        
-    //Serial.print(F(";B;")); Serial.print(livello_batt, DEC);
+    Serial.print(F(";VD;")); Serial.print(vel_dx, DEC);
+    Serial.print(F(";VS;")); Serial.print(vel_sx, DEC);        
     Serial.println();
 
     cnt_comm = CICLI_COMM;
