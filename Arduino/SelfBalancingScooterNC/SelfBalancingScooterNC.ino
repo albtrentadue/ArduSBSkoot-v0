@@ -111,24 +111,29 @@ int16_t t_acc; //Globale: usata nel MPU-6050
 #define PWM_THROTTLE_MIN 116
 //Ampiezza throttle iniziale in marcia avanti
 //TODO: da regolare
-#define THR_INIT_FWD 116
+#define THR_INIT_FWD 125
 //Ampiezza throttle a regime in marcia avanti
 //TODO: da regolare
 #define THR_REG_FWD 160
 //Ampiezza throttle iniziale in marcia indietro
 //TODO: da regolare
-#define THR_INIT_BWD 116
+#define THR_INIT_BWD 125
 //Ampiezza throttle a regime in marcia indietro
 //TODO: da regolare
 #define THR_REG_BWD 150
+//Set point velocità media in marcia avanti
+#define VEL_REG_FWD 30
+//Set point velocità media in marcia indietro
+#define VEL_REG_BWD 20
 //Setpoint velocità iniziali, indicizzati dai 2 LSB dello stato
 int16_t throttles_init[] = {PWM_THROTTLE_MIN, PWM_THROTTLE_MIN, THR_INIT_FWD,THR_INIT_BWD};
 //Setpoint velocità a regime, indicizzati dai 2 LSB dello stato
 int16_t throttles_reg[] = {0, 0, THR_REG_FWD, THR_REG_BWD};
+int vels_reg[] = {0, 0, VEL_REG_FWD, VEL_REG_BWD};
 //costante dell'esponenziale negativo per l'accelerazione
-#define ACC_THR_KAPPA 0.012
+#define ACC_THR_KAPPA 0.015
 //costante decremento lineare della decelerazione
-#define DEC_THR_LIN 0.75
+#define DEC_THR_LIN 0.35
 //Valore di throttle sotto il minimo per resettare la corrente
 #define PWM_THROTTLE_ZEROCURR 100
 //Bilanciamento throttle ruota SINISTRA (delta rispetto alla destra)
@@ -147,18 +152,22 @@ byte retromarcia_sx = LOW;
 boolean inv_da_applicare_dx = false;
 boolean inv_da_applicare_sx = false;
 
-//Valore minimo del sensore analogico di corrente che considera il mezzo fermo
+//COSTANTI E VARIABILI DELL'ESTIMATORE DI VELOCITA'
+//Tracciaori della fase del sensore di Hall
+byte stato_riv_vel_dx = LOW;
+byte stato_riv_vel_sx = LOW;
+//Contatori di stima del periodo di rotazione
+int cnt_periodo_dx = 0;
+int cnt_periodo_sx = 0;
+//Numero massimo di conteggi oltre il quale la ruota si considera quasi ferma
+#define MAX_PERIODO_RIV 120
+//Velocità angolari stimate delle ruote
+int vel_dx = 0;
+int vel_sx = 0;
+int vel_media = 0;
+//Valore minimo della vel_media che considera il mezzo fermo
 //TODO: da regolare
-#define VEL_FERMO 10
-
-//Variabili per le misure della corrente alle ruote
-int32_t somma_corr_dx = 0;
-int16_t serie_corr_dx[CICLI_MEDIE];
-int16_t media_corr_dx;
-int32_t somma_corr_sx = 0;
-int16_t serie_corr_sx[CICLI_MEDIE];
-int16_t media_corr_sx;
-
+#define VEL_FERMO 4
 
 // Livelli analogici del partitore batteria
 // TODO: Calibrare rispetto al valore massimo della batteria
@@ -185,6 +194,8 @@ void setup() {
   pinMode(LED_BUILTIN, OUTPUT);
   pinMode(PWM_DX, OUTPUT);
   pinMode(PWM_SX, OUTPUT);
+  pinMode(MISVEL_DX, INPUT);
+  pinMode(MISVEL_SX, INPUT);  
   pinMode(FRENATA_DX, OUTPUT);
   pinMode(FRENATA_SX, OUTPUT);
   pinMode(INVERS_DX, OUTPUT);
@@ -203,8 +214,6 @@ void setup() {
   for (i = 0; i < CICLI_MEDIE; i++) {
     serie_z[i] = 0;
     serie_x[i] = 0;
-    serie_corr_dx[i] = 0;
-    serie_corr_sx[i] = 0;
   }
 
   //Stati iniziali switch controllo
@@ -215,6 +224,10 @@ void setup() {
 
   //Controlla il jumper di hoverboard capovolto a massa
   hb_capovolto = (digitalRead(JUMPER_CAPOVOLTO) == LOW);
+
+  //Inizializzazione dei tracciatori della fase dei sensori di Hall
+  stato_riv_vel_dx = digitalRead(MISVEL_DX);
+  stato_riv_vel_sx = digitalRead(MISVEL_SX);  
 
   //Il controller deve essere tenuto con throttle a zero
   //se l'hoverboard era stato spento in modo brusco
@@ -228,6 +241,7 @@ void loop() {
   // put your main code here, to run repeatedly:
   leggi_accelerometro();
   leggi_analogici();
+  stima_velocita();
   leggi_nunchuck();
   leggi_presenza();
   calcola_medie();
@@ -276,22 +290,53 @@ void leggi_accelerometro(void)
 /**
    Legge i valori analogici:
    A0: stato batteria -> livello_batt
-   A1: velocità ruota DX -> corr_dx
-   A2: velocità ruota SX -> corr_sx
 */
 void leggi_analogici(void)
 {
   livello_batt = analogRead(VALIM_ANALOG);
-  //Scartare la prima lettura nel cambio canale A/D
-  analogRead(MISVEL_DX);
-  int16_t corr_dx = analogRead(MISVEL_DX);
-  somma_corr_dx += (corr_dx - serie_corr_dx[ultimo_campione]);
-  serie_corr_dx[ultimo_campione] = corr_dx;
-  //Scartare la prima lettura nel cambio canale A/D
-  analogRead(MISVEL_SX);
-  int16_t corr_sx = analogRead(MISVEL_SX);
-  somma_corr_sx += (corr_sx - serie_corr_sx[ultimo_campione]);
-  serie_corr_sx[ultimo_campione] = corr_sx;
+}
+
+/**
+ * Stima la velocità delle ruote dal semi-periodo 
+ * delle onde quadre dei rivelatori di Hall. 
+ * Assume che le onde abbiano un duty cycle circa al 50%
+ */
+void stima_velocita(void) 
+{
+  byte x;
+  //Transizione ad ogni cambio di livello, si assume duty al 50%
+  //Se non c'è transizione si conteggia fino al limite massimo o si assume velocità zero
+  //Se c'è transizione, si termina il conteggio e si calcola la velocità angolare
+  
+  //DESTRA
+  x = digitalRead(MISVEL_DX);
+  if (stato_riv_vel_dx == x)
+    //No transizione      
+    if (cnt_periodo_dx < MAX_PERIODO_RIV) cnt_periodo_dx++;
+    else vel_dx = 0;          
+  else {    
+    //Transizione
+    vel_dx = (MAX_PERIODO_RIV * 10 / cnt_periodo_dx);
+    cnt_periodo_dx = 0;
+  }
+  stato_riv_vel_dx = x;
+ 
+  //SINISTRA
+  x = digitalRead(MISVEL_SX);
+  if (stato_riv_vel_sx == x)
+    //No transizione 
+    if (cnt_periodo_sx < MAX_PERIODO_RIV) cnt_periodo_sx++;
+    else vel_sx = 0;          
+  else {
+    //Transizione
+    vel_sx = (MAX_PERIODO_RIV * 10 / cnt_periodo_sx);
+    cnt_periodo_sx = 0;
+  }
+  stato_riv_vel_sx = x;
+
+  //la somma delle velocità stimate delle due ruote è una stima della velocità media complessiva.  
+  vel_media = vel_dx + vel_sx;
+             
 }
 
 /**
@@ -331,10 +376,6 @@ void calcola_medie(void)
 {
   media_z_acc = somma_z_acc / CICLI_MEDIE;
   media_x_acc = somma_x_acc / CICLI_MEDIE;
-
-  media_corr_dx = somma_corr_dx / CICLI_MEDIE;
-  media_corr_sx = somma_corr_sx / CICLI_MEDIE;
-
 }
 
 /**
@@ -376,23 +417,12 @@ byte stato_inclinazione(void) {
 }
 
 /**
-   Ritorna lo stato di velocità media tra le due ruote
-   true: c'è movimento
-
-   TODO: con l'introduzione del controllo direzione, deve essere rivisto!
-*/
-boolean stato_corr_ruote(void) {
-  return ((media_corr_dx > VEL_FERMO) || (media_corr_sx > VEL_FERMO));
-}
-
-/**
    Gestisce lo stato di funzionamento del programma e le sue transizioni.
    Eseguito ogni CICLI_MEDIE iterazioni
 */
 void transiz_stato(void)
 {
   byte incl_pedana = stato_inclinazione();
-  bool stato_corrente_ruote = stato_corr_ruote();
   byte nuovo_stato_prog = stato_prog;
   byte nuova_retromarcia_sx = retromarcia_sx;
   byte nuova_retromarcia_dx = retromarcia_dx;
@@ -422,7 +452,7 @@ void transiz_stato(void)
           nuovo_stato_prog = ST_P0_F;
           break;
         case PEND_AV:
-          if (stato_corrente_ruote)
+          if (vel_media > 0)
             nuovo_stato_prog = MV_P1_F;
       }
       break;
@@ -430,7 +460,7 @@ void transiz_stato(void)
     case MV_P0_F: //1000      
       switch (incl_pedana) {
         case PP0:        
-          if (!stato_corrente_ruote)
+          if (vel_media <= VEL_FERMO)
             nuovo_stato_prog = ST_P0_F;
           break;
         case PEND_IND:
@@ -444,7 +474,7 @@ void transiz_stato(void)
     case MV_P1_F: //1010
       switch (incl_pedana) {
         case PEND_AV:
-          if (!stato_corrente_ruote)
+          if (vel_media <= VEL_FERMO)
             nuovo_stato_prog = ST_P1_F;
           break;
         case PP0:
@@ -465,7 +495,7 @@ void transiz_stato(void)
           nuovo_stato_prog = MV_P0_F;
           break;
         case PEND_IND:
-          if (!stato_corrente_ruote)
+          if (vel_media <= VEL_FERMO)
             nuovo_stato_prog = ST_P0_F;
           break;
       }
@@ -494,7 +524,7 @@ void transiz_stato(void)
           nuovo_stato_prog = ST_P0_B;
           break;
         case PEND_IND:
-          if (stato_corrente_ruote)
+          if (vel_media > 0)
             nuovo_stato_prog = MV_P1_B;
       }
       break;
@@ -502,7 +532,7 @@ void transiz_stato(void)
     case MV_P0_B: //1001
       switch (incl_pedana) {
         case PP0:        
-          if (!stato_corrente_ruote)
+          if (vel_media <= VEL_FERMO)
             nuovo_stato_prog = ST_P0_B;
           break;
         case PEND_AV:
@@ -516,7 +546,7 @@ void transiz_stato(void)
     case MV_P1_B: //1011
       switch (incl_pedana) {
         case PEND_IND:  
-          if (!stato_corrente_ruote)
+          if (vel_media <= VEL_FERMO)
             nuovo_stato_prog = ST_P1_B;
           break;        
         case PP0:        
@@ -537,7 +567,7 @@ void transiz_stato(void)
           nuovo_stato_prog = MV_P0_B;
           break;        
         case PEND_AV:
-          if (!stato_corrente_ruote)        
+          if (vel_media <= VEL_FERMO)        
             nuovo_stato_prog = ST_P0_B;
           break;        
       }
@@ -621,6 +651,8 @@ void applica_pwm(void)
     case MV_P1_B: //1011
       //Profilo esponenziale negativo throttle in accelerazione
       dt = (throttles_reg[idx] - throttle_dx) * ACC_THR_KAPPA;    
+      //Controllato dalla velocità
+      //dt = (vels_reg[idx] - vel_media) * ACC_THR_KAPPA;      
       throttle_dx = throttle_dx+dt;
       throttle_sx = throttle_dx;  //Per ora
       break;
@@ -628,14 +660,17 @@ void applica_pwm(void)
     case MV_PR_F: //1100
     case MV_PR_B: //1101
       //Profilo throttle in decelerazione lineare
-      throttle_dx = throttle_dx > PWM_THROTTLE_ZEROCURR ? throttle_dx-DEC_THR_LIN : PWM_THROTTLE_ZEROCURR;
+      if (vel_media > VEL_FERMO && throttle_dx > PWM_THROTTLE_ZEROCURR)
+        throttle_dx = throttle_dx-DEC_THR_LIN;
+      else
+        throttle_dx = PWM_THROTTLE_ZEROCURR;
       throttle_sx = throttle_dx;  //Per ora
       break;
 
     case MV_P0_F: //1000
     case MV_P0_B: //1001
       //Profilo throttle in decelerazione lineare più lieve
-      throttle_dx = throttle_dx > PWM_THROTTLE_ZEROCURR ? throttle_dx-(DEC_THR_LIN / 2) : PWM_THROTTLE_ZEROCURR;
+      throttle_dx = vel_media > VEL_FERMO ? throttle_dx-(DEC_THR_LIN / 2) : PWM_THROTTLE_ZEROCURR;
       throttle_sx = throttle_dx;  //Per ora
       break;
   }
@@ -681,8 +716,8 @@ void report_status(void)
     Serial.print(F(";XM;")); Serial.print(media_x_acc, DEC);
     Serial.print(F(";Td;")); Serial.print(pwm_byte_dx, DEC);
     Serial.print(F(";Ts;")); Serial.print(pwm_byte_sx, DEC);
-    Serial.print(F(";VD;")); Serial.print(media_corr_dx, DEC);
-    Serial.print(F(";VS;")); Serial.print(media_corr_sx, DEC);        
+    Serial.print(F(";VD;")); Serial.print(vel_dx, DEC);
+    Serial.print(F(";VS;")); Serial.print(vel_sx, DEC);            
     //Serial.print(F(";Id;")); Serial.print(retromarcia_dx, DEC);
     //Serial.print(F(";Is;")); Serial.print(retromarcia_sx, DEC);
     //Serial.print(F(";B;")); Serial.print(livello_batt, DEC);
