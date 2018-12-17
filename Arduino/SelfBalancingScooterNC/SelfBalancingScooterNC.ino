@@ -38,7 +38,7 @@
 #define PRESENZA 8
 //Numero di test per convalidare la presenza
 #define CONFERME_PRESENZA 10
-byte cnt_presenza = 0;
+byte cnt_presenza = CONFERME_PRESENZA;
 bool presenza = false;
 bool abilita_dopo_assenza = false;
 
@@ -110,34 +110,29 @@ int16_t t_acc; //Globale: usata nel MPU-6050
 //valore minimo del PWM che ferma il motore
 #define PWM_THROTTLE_MIN 116
 //Ampiezza throttle iniziale in marcia avanti
+#define PWM_THROTTLE_MAX 250
+//Ampiezza throttle iniziale in marcia avanti
 //TODO: da regolare
-#define THR_INIT_FWD 125
-//Ampiezza throttle a regime in marcia avanti
-//TODO: da regolare
-#define THR_REG_FWD 160
+#define THR_INIT_FWD 130
 //Ampiezza throttle iniziale in marcia indietro
 //TODO: da regolare
-#define THR_INIT_BWD 125
-//Ampiezza throttle a regime in marcia indietro
-//TODO: da regolare
-#define THR_REG_BWD 150
+#define THR_INIT_BWD 130
 //Set point velocità media in marcia avanti
-#define VEL_REG_FWD 30
+#define VEL_REG_FWD 80
 //Set point velocità media in marcia indietro
-#define VEL_REG_BWD 20
+#define VEL_REG_BWD 60
 //Setpoint velocità iniziali, indicizzati dai 2 LSB dello stato
 int16_t throttles_init[] = {PWM_THROTTLE_MIN, PWM_THROTTLE_MIN, THR_INIT_FWD,THR_INIT_BWD};
 //Setpoint velocità a regime, indicizzati dai 2 LSB dello stato
-int16_t throttles_reg[] = {0, 0, THR_REG_FWD, THR_REG_BWD};
 int vels_reg[] = {0, 0, VEL_REG_FWD, VEL_REG_BWD};
-//costante dell'esponenziale negativo per l'accelerazione
-#define ACC_THR_KAPPA 0.015
+//Costante di controllo proporzionale throttle-errore velocità
+#define THR_EV_KAPPA_P 0.003
 //costante decremento lineare della decelerazione
 #define DEC_THR_LIN 0.35
 //Valore di throttle sotto il minimo per resettare la corrente
 #define PWM_THROTTLE_ZEROCURR 100
 //Bilanciamento throttle ruota SINISTRA (delta rispetto alla destra)
-#define PWM_THROTTLE_SX_DELTA 5
+#define PWM_THROTTLE_SX_DELTA 0
 //Livello di throttle da applicare per il PWM
 float throttle_dx = 0.0;
 float throttle_sx = 0.0;
@@ -167,7 +162,7 @@ int vel_sx = 0;
 int vel_media = 0;
 //Valore minimo della vel_media che considera il mezzo fermo
 //TODO: da regolare
-#define VEL_FERMO 4
+#define VEL_FERMO 2
 
 // Livelli analogici del partitore batteria
 // TODO: Calibrare rispetto al valore massimo della batteria
@@ -334,8 +329,8 @@ void stima_velocita(void)
   }
   stato_riv_vel_sx = x;
 
-  //la somma delle velocità stimate delle due ruote è una stima della velocità media complessiva.  
-  vel_media = vel_dx + vel_sx;
+  //stima della velocità media complessiva.  
+  vel_media = (vel_dx + vel_sx) / 2;
              
 }
 
@@ -636,6 +631,7 @@ void applica_pwm(void)
 
   byte idx = stato_prog & 0b11; 
   float dt = 0.0;
+  int vtarget;
 
   switch (stato_prog) {    
     case ST_P0_F: //0000
@@ -649,11 +645,11 @@ void applica_pwm(void)
   
     case MV_P1_F: //1010
     case MV_P1_B: //1011
-      //Profilo esponenziale negativo throttle in accelerazione
-      dt = (throttles_reg[idx] - throttle_dx) * ACC_THR_KAPPA;    
-      //Controllato dalla velocità
-      //dt = (vels_reg[idx] - vel_media) * ACC_THR_KAPPA;      
-      throttle_dx = throttle_dx+dt;
+      //Profilo controllato in velocità
+      //Controllo Prop-ONLY della velocità
+      vtarget = vels_reg[idx] + abs(media_x_acc / 10);
+      dt = (vtarget - vel_media) * THR_EV_KAPPA_P;      
+      throttle_dx = constrain(throttle_dx+dt, 0.0, PWM_THROTTLE_MAX);
       throttle_sx = throttle_dx;  //Per ora
       break;
       
